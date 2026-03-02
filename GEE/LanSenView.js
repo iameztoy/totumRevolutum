@@ -1,15 +1,16 @@
 /***************************************
  * POI Imagery Explorer (S2 + Landsat + S1)
  *
- * UX:
- * - Query is independent of display presets (composites & S1 viz)
- * - All visualization controls are in RESULTS view
- * - Changing presets updates ACTIVE layers + preview without re-query
- * - Sentinel-1 is robust to missing polarizations/modes: query all, adapt display per image
+ * HARD FIX:
+ * - Avoid "Widgets can only be added to one panel at a time" by:
+ *   1) Adding ONE uiContainer to map.widgets() ONCE (no re-adding panels)
+ *   2) sidePanel is shown/hidden via style('shown') only (no re-parenting)
+ *   3) Settings/Results/Preview are fixed panels added once; toggle via 'shown'
  *
- * S1:
- * - COPERNICUS/S1_GRD in GEE is in dB (do NOT log10 again)
- * - Dual-pol presets adapt to VV/VH or HH/HV, else fallback to single-pol
+ * FEATURES:
+ * - Stay in Results when toggling/previewing (preview updates, no tab switch)
+ * - Group Sentinel-2 & Landsat results by DATE and load mosaics per date
+ * - Sentinel-1 per-scene
  ****************************************/
 
 // -------------------------
@@ -19,19 +20,26 @@ var DEFAULTS = {
   bufferKm: 5,
   lookbackDays: 30,
   cloudMax: 30,
-  maxImages: 40,
+  maxImages: 120,
   autoQueryAfterPOI: true,
-  s2Level: 'L1C (TOA)',   // non-atmos corrected default
-  landsatLevel: 'TOA',    // non-atmos corrected default
-  s1ModeFilter: 'ANY'     // allow any mode by default (IW/EW/SM/WV)
+  s2Level: 'L1C (TOA)',
+  landsatLevel: 'TOA',
+  s1ModeFilter: 'ANY'
 };
 
 var PAGE_SIZE = 10;
 
 // -------------------------
-// Composites
+// UI State
 // -------------------------
-// Sentinel-2 composites (from Sentinel Hub S2 composites list)
+var uiState = {
+  panelOpen: true,
+  view: 'Settings' // 'Settings' | 'Results' | 'Preview'
+};
+
+// -------------------------
+// Composites / Viz
+// -------------------------
 var S2_COMPOSITES = [
   {name: 'True Color (4,3,2)',   type: 'rgb', bands: ['B4','B3','B2']},
   {name: 'False Color (8,4,3)',  type: 'rgb', bands: ['B8','B4','B3']},
@@ -47,7 +55,6 @@ var S2_COMPOSITES = [
   {name: 'NDVI',                 type: 'ndvi'}
 ];
 
-// Landsat 8/9 composites (native Landsat combos)
 var LS_COMPOSITES = [
   {name: 'Natural Color (4,3,2)',           type: 'rgb', nums: [4,3,2]},
   {name: 'Color Infrared (5,4,3)',          type: 'rgb', nums: [5,4,3]},
@@ -63,17 +70,16 @@ var LS_COMPOSITES = [
   {name: 'NDVI',                            type: 'ndvi'}
 ];
 
-// Sentinel-1 visualization presets (ratios/indices + RGB ratio ideas inspired by common practice)
 var S1_VIZ = [
   {name: 'Auto single (prefer VH)', kind: 'auto_single'},
-  {name: 'Auto RGB ratio (dual-pol)', kind: 'auto_rgb_ratio'},          // co, cross, cross-co (dB)
+  {name: 'Auto RGB ratio (dual-pol)', kind: 'auto_rgb_ratio'}, // [co, cross, cross-co] dB
   {name: 'Band: VV', kind: 'band', band: 'VV'},
   {name: 'Band: VH', kind: 'band', band: 'VH'},
   {name: 'Band: HH', kind: 'band', band: 'HH'},
   {name: 'Band: HV', kind: 'band', band: 'HV'},
-  {name: 'Index: cross - co (dB) (auto)', kind: 'auto_cross_minus_co'}, // VH-VV or HV-HH
-  {name: 'NDPI (auto dual-pol)', kind: 'auto_ndpi'},                    // (co-cross)/(co+cross) in linear
-  {name: 'RVI4S1 (auto dual-pol)', kind: 'auto_rvi'}                    // q*(q+3)/(q+1)^2, q=cross/co in linear
+  {name: 'Index: cross - co (dB) (auto)', kind: 'auto_cross_minus_co'},
+  {name: 'NDPI (auto dual-pol)', kind: 'auto_ndpi'},
+  {name: 'RVI4S1-like (auto dual-pol)', kind: 'auto_rvi'}
 ];
 
 function getByName(list, name, fallbackIdx) {
@@ -82,7 +88,7 @@ function getByName(list, name, fallbackIdx) {
 }
 
 // -------------------------
-// State
+// App State
 // -------------------------
 var state = {
   poi: null,
@@ -90,22 +96,22 @@ var state = {
   bufferLayer: null,
   poiPicking: true,
 
-  // active map layers and metadata for live updates
-  resultsLayers: {},   // key -> ui.Map.Layer
-  layerMeta: {},       // key -> {group, sensorKey, systemId, labelBase, pols, mode}
+  queryDone: false,
+
+  // Active layers
+  resultsLayers: {}, // key -> ui.Map.Layer
+  layerMeta: {},     // key -> {group, sensorKey, ids, labelBase, s1:{pols,mode}}
   activeKey: null,
 
-  // query results (client-side lists)
+  // Lists
+  // S2/LS: items are {date, ids[], cloudMean, tileCount}
+  // S1: items are {systemId, date, pass, relOrbit, mode, pols}
   lists: {
-    S2: { items: [], page: 0, sensorKey: 'S2_L1C' },
-    LS: { items: [], page: 0, sensorKey: 'Landsat_TOA' },
-    S1: { items: [], page: 0, sensorKey: 'S1' }
-  },
-
-  queryDone: false
+    S2: {items: [], page: 0, sensorKey: 'S2_L1C', totalTiles: 0},
+    LS: {items: [], page: 0, sensorKey: 'Landsat_TOA', totalTiles: 0},
+    S1: {items: [], page: 0, sensorKey: 'S1'}
+  }
 };
-
-var uiState = { panelOpen: true, view: 'Settings' };
 
 // -------------------------
 // Map
@@ -131,26 +137,22 @@ function placeholder(txt) {
   return ui.Label(txt, {fontSize: '12px', color: '#777', whiteSpace: 'pre', margin: '6px 0 0 0'});
 }
 
-function dbToLin(dbImg) {
-  // db -> linear: 10^(db/10)
-  return ee.Image(10).pow(dbImg.divide(10));
-}
-
 function listHas(arr, val) {
   if (!arr) return false;
   for (var i = 0; i < arr.length; i++) if (String(arr[i]) === String(val)) return true;
   return false;
 }
+function dbToLin(dbImg) { return ee.Image(10).pow(dbImg.divide(10)); }
 
 // -------------------------
-// Query-time settings getters
+// Query-time getters
 // -------------------------
 function getS2Level() { return s2LevelSelect.getValue(); }
 function getLSLevel() { return landsatLevelSelect.getValue(); }
 function getS1ModeFilter() { return s1ModeSelect.getValue(); }
 
 // -------------------------
-// Display-time settings getters (Results tab)
+// Display-time getters
 // -------------------------
 function useCloudRemoval() { return cloudRemovalCheckbox.getValue() === true; }
 function getS2Composite() { return getByName(S2_COMPOSITES, s2CompositeSelect.getValue(), 0); }
@@ -191,103 +193,102 @@ function scaleLandsatSR(img) {
 // -------------------------
 function opticalVisParams() { return {min: 0.02, max: 0.35, gamma: 1.1}; }
 function ndviVisParams() { return {min: 0, max: 1, palette: ['#8c510a','#d8b365','#f6e8c3','#c7eae5','#5ab4ac','#01665e']}; }
-function s1BandVisParams() { return {min: -25, max: 0}; } // dB
+function s1BandVisParams() { return {min: -25, max: 0}; }
 function s1DiffVisParams() { return {min: -12, max: 6, palette: ['#2c7bb6','#abd9e9','#ffffbf','#fdae61','#d7191c']}; }
 function s1Index01VisParams() { return {min: 0, max: 1, palette: ['#8e0152','#de77ae','#f7f7f7','#7fbc41','#276419']}; }
 
-// Decide vis per sensorKey and current preset
 function getVisForSensor(sensorKey) {
   if (sensorKey === 'S1') {
     var p = getS1VizPreset();
     if (p.kind === 'auto_ndpi') return {min: -1, max: 1, palette: ['#2c7bb6','#abd9e9','#ffffbf','#fdae61','#d7191c']};
     if (p.kind === 'auto_rvi') return s1Index01VisParams();
     if (p.kind === 'auto_cross_minus_co') return s1DiffVisParams();
-    return s1BandVisParams(); // includes RGB ratio as well (values in dB-ish range)
+    return s1BandVisParams();
   }
-  if (sensorKey.indexOf('S2_') === 0) {
-    return (getS2Composite().type === 'ndvi') ? ndviVisParams() : opticalVisParams();
-  }
-  if (sensorKey.indexOf('Landsat_') === 0) {
-    return (getLSComposite().type === 'ndvi') ? ndviVisParams() : opticalVisParams();
-  }
+  if (sensorKey.indexOf('S2_') === 0) return (getS2Composite().type === 'ndvi') ? ndviVisParams() : opticalVisParams();
+  if (sensorKey.indexOf('Landsat_') === 0) return (getLSComposite().type === 'ndvi') ? ndviVisParams() : opticalVisParams();
   return opticalVisParams();
 }
 
 // -------------------------
-// Build display images
+// Build display images (mosaics for S2/LS)
 // -------------------------
-function makeDisplayImage(sensorKey, systemId, meta) {
-  var maskOn = useCloudRemoval();
+function makeDisplayImage(sensorKey, idsOrId, meta) {
+  var ids = (Array.isArray(idsOrId)) ? idsOrId : [idsOrId];
 
-  // Sentinel-2
-  if (sensorKey === 'S2_L1C' || sensorKey === 'S2_L2A') {
-    var s2 = ee.Image(systemId);
-    if (maskOn) s2 = (sensorKey === 'S2_L2A') ? maskS2_L2A_SCL(s2) : maskS2_L1C_QA60(s2);
-
-    var c = getS2Composite();
-    if (c.type === 'ndvi') return s2.normalizedDifference(['B8','B4']).rename('NDVI');
-    return s2.select(c.bands).multiply(0.0001);
-  }
-
-  // Landsat
-  if (sensorKey === 'Landsat_TOA' || sensorKey === 'Landsat_L2SR') {
-    var l = ee.Image(systemId);
-    if (maskOn) {
-      l = ee.Image(ee.Algorithms.If(l.bandNames().contains('QA_PIXEL'), maskLandsatClouds_QA_PIXEL(l), l));
-    }
-
-    var cL = getLSComposite();
-    if (cL.type === 'ndvi') {
-      if (sensorKey === 'Landsat_L2SR') {
-        l = scaleLandsatSR(l);
-        return l.normalizedDifference(['SR_B5','SR_B4']).rename('NDVI');
-      }
-      return l.normalizedDifference(['B5','B4']).rename('NDVI');
-    }
-
-    function bandName(n) { return (sensorKey === 'Landsat_L2SR') ? ('SR_B' + n) : ('B' + n); }
-    var b = cL.nums;
-    var bands = [bandName(b[0]), bandName(b[1]), bandName(b[2])];
-
-    if (sensorKey === 'Landsat_L2SR') l = scaleLandsatSR(l);
-    return l.select(bands);
-  }
-
-  // Sentinel-1
   if (sensorKey === 'S1') {
-    return makeS1DisplayImage(systemId, meta);
+    return makeS1DisplayImage(ee.Image(ids[0]), meta);
+  }
+
+  var col = ee.ImageCollection.fromImages(ids.map(function(id){ return ee.Image(id); }));
+
+  if (sensorKey === 'S2_L1C' || sensorKey === 'S2_L2A') {
+    var comp = getS2Composite();
+    var maskOn = useCloudRemoval();
+
+    col = col.map(function(img) {
+      img = ee.Image(img);
+      if (maskOn) img = (sensorKey === 'S2_L2A') ? maskS2_L2A_SCL(img) : maskS2_L1C_QA60(img);
+      if (comp.type === 'ndvi') return img.normalizedDifference(['B8','B4']).rename('NDVI');
+      return img.select(comp.bands).multiply(0.0001);
+    });
+
+    return col.mosaic();
+  }
+
+  if (sensorKey === 'Landsat_TOA' || sensorKey === 'Landsat_L2SR') {
+    var compL = getLSComposite();
+    var maskOnL = useCloudRemoval();
+
+    col = col.map(function(img) {
+      img = ee.Image(img);
+
+      if (maskOnL) {
+        img = ee.Image(ee.Algorithms.If(img.bandNames().contains('QA_PIXEL'), maskLandsatClouds_QA_PIXEL(img), img));
+      }
+
+      if (compL.type === 'ndvi') {
+        if (sensorKey === 'Landsat_L2SR') {
+          img = scaleLandsatSR(img);
+          return img.normalizedDifference(['SR_B5','SR_B4']).rename('NDVI');
+        }
+        return img.normalizedDifference(['B5','B4']).rename('NDVI');
+      }
+
+      function bandName(n) { return (sensorKey === 'Landsat_L2SR') ? ('SR_B' + n) : ('B' + n); }
+      var b = compL.nums;
+      var bands = [bandName(b[0]), bandName(b[1]), bandName(b[2])];
+
+      if (sensorKey === 'Landsat_L2SR') img = scaleLandsatSR(img);
+      return img.select(bands);
+    });
+
+    return col.mosaic();
   }
 
   return null;
 }
 
-function makeS1DisplayImage(systemId, meta) {
-  // GEE S1_GRD is already in dB
-  var img = ee.Image(systemId);
-  var pols = meta && meta.pols ? meta.pols : null;
+function makeS1DisplayImage(img, meta) {
+  var pols = meta && meta.s1 && meta.s1.pols ? meta.s1.pols : null;
 
-  // Determine available family
   var hasVV = listHas(pols, 'VV');
   var hasVH = listHas(pols, 'VH');
   var hasHH = listHas(pols, 'HH');
   var hasHV = listHas(pols, 'HV');
 
-  // helpers
   function pickAutoSingle() {
-    // prefer VH, then VV, then HV, then HH
     if (hasVH) return img.select('VH');
     if (hasVV) return img.select('VV');
     if (hasHV) return img.select('HV');
     if (hasHH) return img.select('HH');
 
-    // fallback: if pol list missing, attempt common bands (will error if none exist)
     return ee.Image(ee.Algorithms.If(img.bandNames().contains('VH'), img.select('VH'),
       ee.Algorithms.If(img.bandNames().contains('VV'), img.select('VV'),
         ee.Algorithms.If(img.bandNames().contains('HV'), img.select('HV'), img.select('HH')))));
   }
 
   function chooseCoCross() {
-    // returns {coBand, crossBand} (strings) or null
     if (hasVV && hasVH) return {co: 'VV', cross: 'VH'};
     if (hasHH && hasHV) return {co: 'HH', cross: 'HV'};
     return null;
@@ -295,14 +296,10 @@ function makeS1DisplayImage(systemId, meta) {
 
   var preset = getS1VizPreset();
 
-  if (preset.kind === 'auto_single') {
-    return pickAutoSingle();
-  }
+  if (preset.kind === 'auto_single') return pickAutoSingle();
 
   if (preset.kind === 'band') {
-    var b = preset.band;
-    if (listHas(pols, b)) return img.select(b);
-    // fallback to auto single if band missing for this image
+    if (listHas(pols, preset.band)) return img.select(preset.band);
     return pickAutoSingle();
   }
 
@@ -311,7 +308,7 @@ function makeS1DisplayImage(systemId, meta) {
     if (!cc) return pickAutoSingle();
     var co = img.select(cc.co);
     var cross = img.select(cc.cross);
-    var diff = cross.subtract(co); // (dB) ratio proxy
+    var diff = cross.subtract(co);
     return ee.Image.cat([co.rename('R'), cross.rename('G'), diff.rename('B')]);
   }
 
@@ -322,54 +319,27 @@ function makeS1DisplayImage(systemId, meta) {
   }
 
   if (preset.kind === 'auto_ndpi') {
-    // NDPI = (co - cross) / (co + cross) in linear
     var cc3 = chooseCoCross();
     if (!cc3) return pickAutoSingle();
-
-    var coDb = img.select(cc3.co);
-    var crossDb = img.select(cc3.cross);
-    var coLin = dbToLin(coDb);
-    var crossLin = dbToLin(crossDb);
-
-    var ndpi = coLin.subtract(crossLin).divide(coLin.add(crossLin)).rename('NDPI');
-    return ndpi;
+    var coLin = dbToLin(img.select(cc3.co));
+    var crossLin = dbToLin(img.select(cc3.cross));
+    return coLin.subtract(crossLin).divide(coLin.add(crossLin)).rename('NDPI');
   }
 
   if (preset.kind === 'auto_rvi') {
-    // RVI4S1-like: q*(q+3)/(q+1)^2, q = cross/co in linear
     var cc4 = chooseCoCross();
     if (!cc4) return pickAutoSingle();
-
     var coLin2 = dbToLin(img.select(cc4.co));
     var crossLin2 = dbToLin(img.select(cc4.cross));
     var q = crossLin2.divide(coLin2);
-
-    var N = q.multiply(q.add(3));
-    var D = (q.add(1)).multiply(q.add(1));
-    var rvi = N.divide(D).rename('RVI4S1_like');
-    return rvi;
+    return q.multiply(q.add(3)).divide(q.add(1).multiply(q.add(1))).rename('RVI4S1_like');
   }
 
   return pickAutoSingle();
 }
 
 // -------------------------
-// Panel toggle
-// -------------------------
-var panelToggleBtn = ui.Button({
-  label: '✕',
-  style: {fontWeight: 'bold', width: '42px', height: '34px', margin: '0', padding: '0'},
-  onClick: function() {
-    uiState.panelOpen = !uiState.panelOpen;
-    panelToggleBtn.setLabel(uiState.panelOpen ? '✕' : '☰');
-    renderWidgets();
-  }
-});
-var toggleContainer = ui.Panel({style: {position: 'top-left', padding: '8px', width: '60px'}});
-toggleContainer.add(panelToggleBtn);
-
-// -------------------------
-// Header labels
+// UI Widgets (created ONCE)
 // -------------------------
 var title = ui.Label('POI Imagery Explorer', {fontWeight: 'bold', fontSize: '18px', margin: '0 0 4px 0'});
 var subtitle = ui.Label('S2 + Landsat 8/9 + Sentinel-1', {fontSize: '12px', color: '#555', margin: '0 0 8px 0'});
@@ -378,24 +348,17 @@ var referenceDateLabel = ui.Label('Reference date: (not queried yet)', {fontSize
 var statusLabel = ui.Label('Click the map to set the POI (first time).', {fontSize: '12px', margin: '0 0 8px 0'});
 var poiInfo = ui.Label('POI: (none)', {fontSize: '12px', margin: '0 0 8px 0'});
 
-// -------------------------
-// View bar (Settings / Results / Preview)
-// -------------------------
-function viewBtn(label, viewName) {
-  return ui.Button({
-    label: label,
-    style: {stretch: 'horizontal', margin: '0 4px 0 0'},
-    onClick: function() { uiState.view = viewName; renderView(); }
-  });
-}
-var viewBar = ui.Panel({layout: ui.Panel.Layout.flow('horizontal'), style: {margin: '0 0 8px 0'}});
-viewBar.add(viewBtn('Settings', 'Settings'));
-viewBar.add(viewBtn('Results', 'Results'));
-viewBar.add(viewBtn('Preview', 'Preview'));
+var panelToggleBtn = ui.Button({
+  label: '✕',
+  style: {fontWeight: 'bold', width: '42px', height: '34px', margin: '0', padding: '0'},
+  onClick: function() {
+    uiState.panelOpen = !uiState.panelOpen;
+    panelToggleBtn.setLabel(uiState.panelOpen ? '✕' : '☰');
+    sidePanel.style().set('shown', uiState.panelOpen);
+  }
+});
 
-// -------------------------
 // Buttons
-// -------------------------
 var changePoiBtn = ui.Button({
   label: 'Change POI (enable map click)',
   style: {stretch: 'horizontal'},
@@ -428,48 +391,29 @@ var clearBtn = ui.Button({
     state.poiPicking = true;
     statusLabel.setValue('Cleared. Click the map to set a new POI.');
     referenceDateLabel.setValue('Reference date: (not queried yet)');
-    uiState.view = 'Settings';
-    renderView();
+    setView('Settings');
   }
 });
 
-// -------------------------
-// Settings (query-time)
-// -------------------------
+// Query-time controls
 var bufferSlider = ui.Slider({min: 0.5, max: 50, value: DEFAULTS.bufferKm, step: 0.5, style: {stretch: 'horizontal'}});
 bufferSlider.onChange(function(){ if (state.poi) drawBuffer(); });
 
 var lookbackSlider = ui.Slider({min: 7, max: 365, value: DEFAULTS.lookbackDays, step: 1, style: {stretch: 'horizontal'}});
 var cloudSlider = ui.Slider({min: 0, max: 100, value: DEFAULTS.cloudMax, step: 1, style: {stretch: 'horizontal'}});
-var maxImagesSlider = ui.Slider({min: 5, max: 150, value: DEFAULTS.maxImages, step: 1, style: {stretch: 'horizontal'}});
+var maxImagesSlider = ui.Slider({min: 5, max: 400, value: DEFAULTS.maxImages, step: 1, style: {stretch: 'horizontal'}});
 
 var autoQueryCheckbox = ui.Checkbox({label: 'Auto-query right after setting POI', value: DEFAULTS.autoQueryAfterPOI});
+var s2LevelSelect = ui.Select({items: ['L1C (TOA)', 'L2A (SR)'], value: DEFAULTS.s2Level, style: {stretch: 'horizontal'}});
+var landsatLevelSelect = ui.Select({items: ['TOA', 'L2 (SR)'], value: DEFAULTS.landsatLevel, style: {stretch: 'horizontal'}});
+var s1ModeSelect = ui.Select({items: ['ANY', 'IW', 'EW', 'SM', 'WV'], value: DEFAULTS.s1ModeFilter, style: {stretch: 'horizontal'}});
 
-var s2LevelSelect = ui.Select({
-  items: ['L1C (TOA)', 'L2A (SR)'],
-  value: DEFAULTS.s2Level,
-  style: {stretch: 'horizontal'}
-});
-var landsatLevelSelect = ui.Select({
-  items: ['TOA', 'L2 (SR)'],
-  value: DEFAULTS.landsatLevel,
-  style: {stretch: 'horizontal'}
-});
-var s1ModeSelect = ui.Select({
-  items: ['ANY', 'IW', 'EW', 'SM', 'WV'],
-  value: DEFAULTS.s1ModeFilter,
-  style: {stretch: 'horizontal'}
-});
-
-// -------------------------
-// Display controls (Results tab) – post-query
-// -------------------------
+// Display controls (Results)
 var cloudRemovalCheckbox = ui.Checkbox({label: 'Cloud removal (display only)', value: false});
 var s2CompositeSelect = ui.Select({items: S2_COMPOSITES.map(function(c){return c.name;}), value: S2_COMPOSITES[0].name, style: {stretch: 'horizontal'}});
 var lsCompositeSelect = ui.Select({items: LS_COMPOSITES.map(function(c){return c.name;}), value: LS_COMPOSITES[0].name, style: {stretch: 'horizontal'}});
 var s1VizSelect = ui.Select({items: S1_VIZ.map(function(v){return v.name;}), value: S1_VIZ[0].name, style: {stretch: 'horizontal'}});
 
-// Disable display controls until query is done (keeps UX clean)
 function setDisplayControlsEnabled(isEnabled) {
   cloudRemovalCheckbox.setDisabled(!isEnabled);
   s2CompositeSelect.setDisabled(!isEnabled);
@@ -478,32 +422,7 @@ function setDisplayControlsEnabled(isEnabled) {
 }
 setDisplayControlsEnabled(false);
 
-// On-change: update active layers and preview without re-query
-cloudRemovalCheckbox.onChange(function() {
-  if (!state.queryDone) return;
-  updateActiveLayersByGroup('S2');
-  updateActiveLayersByGroup('LS');
-  refreshPreviewIfActive();
-});
-s2CompositeSelect.onChange(function() {
-  if (!state.queryDone) return;
-  updateActiveLayersByGroup('S2');
-  refreshPreviewIfActive();
-});
-lsCompositeSelect.onChange(function() {
-  if (!state.queryDone) return;
-  updateActiveLayersByGroup('LS');
-  refreshPreviewIfActive();
-});
-s1VizSelect.onChange(function() {
-  if (!state.queryDone) return;
-  updateActiveLayersByGroup('S1');
-  refreshPreviewIfActive();
-});
-
-// -------------------------
-// Results panels + pagers
-// -------------------------
+// Counts + result panels
 var s2CountLabel = ui.Label('S2: 0', {fontSize: '12px', color: '#555'});
 var lsCountLabel = ui.Label('Landsat: 0', {fontSize: '12px', color: '#555'});
 var s1CountLabel = ui.Label('S1: 0', {fontSize: '12px', color: '#555'});
@@ -516,21 +435,98 @@ var s2Pager = makePager('S2', s2ResultsPanel);
 var lsPager = makePager('LS', lsResultsPanel);
 var s1Pager = makePager('S1', s1ResultsPanel);
 
-// -------------------------
-// Preview
-// -------------------------
-var previewMeta = ui.Label('Select an image (Preview or tick) to see a thumbnail.', {fontSize: '12px', color: '#555', whiteSpace: 'pre'});
+s2ResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'));
+lsResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'));
+s1ResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'));
+
+// Preview widgets
+var previewMeta = ui.Label('Select an entry (Preview or tick) to see a thumbnail.', {fontSize: '12px', color: '#555', whiteSpace: 'pre'});
 var previewThumbPanel = ui.Panel();
 
 // -------------------------
-// Content panel + side panel
+// Fixed view panels (added ONCE)
 // -------------------------
-var contentPanel = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
+var settingsPanel = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
+var resultsPanel  = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
+var previewPanel  = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
+
+function setView(viewName) {
+  uiState.view = viewName;
+  settingsPanel.style().set('shown', viewName === 'Settings');
+  resultsPanel.style().set('shown', viewName === 'Results');
+  previewPanel.style().set('shown', viewName === 'Preview');
+}
+
+// View buttons
+var viewBar = ui.Panel({layout: ui.Panel.Layout.flow('horizontal'), style: {margin: '0 0 8px 0'}});
+viewBar.add(ui.Button({label:'Settings', style:{margin:'0 4px 0 0'}, onClick:function(){ setView('Settings'); }}));
+viewBar.add(ui.Button({label:'Results',  style:{margin:'0 4px 0 0'}, onClick:function(){ setView('Results'); }}));
+viewBar.add(ui.Button({label:'Preview',  style:{margin:'0 4px 0 0'}, onClick:function(){ setView('Preview'); }}));
+
+// Fill settings panel once
+settingsPanel.add(smallLabel(
+  'How to use:\n' +
+  '1) Click map to set POI\n' +
+  '2) Query imagery\n' +
+  '3) Results: tick dates (S2/LS mosaics) or scenes (S1)\n' +
+  'Preview updates but you stay in Results.'
+));
+settingsPanel.add(referenceDateLabel);
+settingsPanel.add(statusLabel);
+settingsPanel.add(poiInfo);
+settingsPanel.add(changePoiBtn);
+settingsPanel.add(zoomPoiBtn);
+settingsPanel.add(queryBtn);
+settingsPanel.add(clearBtn);
+
+settingsPanel.add(smallLabel('\nQuery settings'));
+settingsPanel.add(smallLabel('Buffer (km)')); settingsPanel.add(bufferSlider);
+settingsPanel.add(smallLabel('Lookback (days)')); settingsPanel.add(lookbackSlider);
+settingsPanel.add(smallLabel('Max cloud (%) (optical filter)')); settingsPanel.add(cloudSlider);
+settingsPanel.add(smallLabel('Max images per sensor (before date grouping)')); settingsPanel.add(maxImagesSlider);
+settingsPanel.add(autoQueryCheckbox);
+
+settingsPanel.add(smallLabel('\nProducts / filters'));
+settingsPanel.add(smallLabel('Sentinel-2 product')); settingsPanel.add(s2LevelSelect);
+settingsPanel.add(smallLabel('Landsat product')); settingsPanel.add(landsatLevelSelect);
+settingsPanel.add(smallLabel('Sentinel-1 mode filter')); settingsPanel.add(s1ModeSelect);
+
+// Fill results panel once
+resultsPanel.add(ui.Label('Display controls (no re-query)', {fontWeight:'bold', margin:'0 0 4px 0'}));
+resultsPanel.add(cloudRemovalCheckbox);
+resultsPanel.add(smallLabel('Sentinel-2 composite')); resultsPanel.add(s2CompositeSelect);
+resultsPanel.add(smallLabel('Landsat composite')); resultsPanel.add(lsCompositeSelect);
+resultsPanel.add(smallLabel('Sentinel-1 visualization')); resultsPanel.add(s1VizSelect);
+
+resultsPanel.add(ui.Label('Sentinel-2 (grouped by date; mosaics)', {fontWeight:'bold', margin:'10px 0 2px 0'}));
+resultsPanel.add(s2CountLabel);
+resultsPanel.add(s2Pager.container);
+resultsPanel.add(s2ResultsPanel);
+
+resultsPanel.add(ui.Label('Landsat (grouped by date; mosaics)', {fontWeight:'bold', margin:'10px 0 2px 0'}));
+resultsPanel.add(lsCountLabel);
+resultsPanel.add(lsPager.container);
+resultsPanel.add(lsResultsPanel);
+
+resultsPanel.add(ui.Label('Sentinel-1 (per scene)', {fontWeight:'bold', margin:'10px 0 2px 0'}));
+resultsPanel.add(s1CountLabel);
+resultsPanel.add(s1Pager.container);
+resultsPanel.add(s1ResultsPanel);
+
+// Fill preview panel once
+previewPanel.add(previewMeta);
+previewPanel.add(previewThumbPanel);
+
+// Start view
+setView('Settings');
+
+// -------------------------
+// Side panel (added ONCE to uiContainer, never re-added elsewhere)
+// -------------------------
 var sidePanel = ui.Panel({
   style: {
-    position: 'top-left',
     width: '390px',
-    height: '700px',
+    height: '740px',
     padding: '10px',
     backgroundColor: 'rgba(255,255,255,0.95)'
   }
@@ -538,97 +534,33 @@ var sidePanel = ui.Panel({
 sidePanel.add(title);
 sidePanel.add(subtitle);
 sidePanel.add(viewBar);
-sidePanel.add(contentPanel);
-
-function renderWidgets() {
-  map.widgets().reset([]);
-  map.widgets().add(toggleContainer);
-  if (uiState.panelOpen) map.widgets().add(sidePanel);
-}
-renderWidgets();
+sidePanel.add(settingsPanel);
+sidePanel.add(resultsPanel);
+sidePanel.add(previewPanel);
 
 // -------------------------
-// Render view
+// uiContainer: ONLY widget added to map.widgets() (never moved)
 // -------------------------
-function renderView() {
-  contentPanel.clear();
+var uiContainer = ui.Panel({
+  layout: ui.Panel.Layout.flow('vertical'),
+  style: {position: 'top-left', padding: '8px'}
+});
 
-  if (uiState.view === 'Settings') {
-    contentPanel.add(smallLabel(
-      'How to use:\n' +
-      '1) Click map to set POI\n' +
-      '2) Click "Query imagery"\n' +
-      '3) Go to Results and tick images\n' +
-      'All visualization controls are in Results (post-query).'
-    ));
-    contentPanel.add(referenceDateLabel);
-    contentPanel.add(statusLabel);
-    contentPanel.add(poiInfo);
-    contentPanel.add(changePoiBtn);
-    contentPanel.add(zoomPoiBtn);
-    contentPanel.add(queryBtn);
-    contentPanel.add(clearBtn);
+// header row with toggle button
+var toggleRow = ui.Panel({layout: ui.Panel.Layout.flow('horizontal')});
+toggleRow.add(panelToggleBtn);
 
-    contentPanel.add(smallLabel('\nQuery settings'));
-    contentPanel.add(smallLabel('Buffer (km)')); contentPanel.add(bufferSlider);
-    contentPanel.add(smallLabel('Lookback (days)')); contentPanel.add(lookbackSlider);
-    contentPanel.add(smallLabel('Max cloud (%) for optical filtering')); contentPanel.add(cloudSlider);
-    contentPanel.add(smallLabel('Max images per sensor')); contentPanel.add(maxImagesSlider);
-    contentPanel.add(autoQueryCheckbox);
+uiContainer.add(toggleRow);
+uiContainer.add(sidePanel);
 
-    contentPanel.add(smallLabel('\nProducts / filters'));
-    contentPanel.add(smallLabel('Sentinel-2 product')); contentPanel.add(s2LevelSelect);
-    contentPanel.add(smallLabel('Landsat product')); contentPanel.add(landsatLevelSelect);
-    contentPanel.add(smallLabel('Sentinel-1 mode filter (ANY recommended for polar regions)')); contentPanel.add(s1ModeSelect);
+// initial show state
+sidePanel.style().set('shown', uiState.panelOpen);
 
-  } else if (uiState.view === 'Results') {
-    contentPanel.add(ui.Label('Display controls (no re-query)', {fontWeight: 'bold', margin: '0 0 4px 0'}));
-
-    if (!state.queryDone) {
-      contentPanel.add(placeholder('Run Query first to enable display controls.'));
-    }
-
-    contentPanel.add(cloudRemovalCheckbox);
-    contentPanel.add(smallLabel('Sentinel-2 composite')); contentPanel.add(s2CompositeSelect);
-    contentPanel.add(smallLabel('Landsat composite')); contentPanel.add(lsCompositeSelect);
-    contentPanel.add(smallLabel('Sentinel-1 visualization')); contentPanel.add(s1VizSelect);
-
-    contentPanel.add(ui.Label('Sentinel-2 results', {fontWeight: 'bold', margin: '10px 0 2px 0'}));
-    contentPanel.add(s2CountLabel);
-    contentPanel.add(s2Pager.container);
-    contentPanel.add(s2ResultsPanel);
-
-    contentPanel.add(ui.Label('Landsat 8/9 results', {fontWeight: 'bold', margin: '10px 0 2px 0'}));
-    contentPanel.add(lsCountLabel);
-    contentPanel.add(lsPager.container);
-    contentPanel.add(lsResultsPanel);
-
-    contentPanel.add(ui.Label('Sentinel-1 results', {fontWeight: 'bold', margin: '10px 0 2px 0'}));
-    contentPanel.add(s1CountLabel);
-    contentPanel.add(s1Pager.container);
-    contentPanel.add(s1ResultsPanel);
-
-    if (!state.queryDone) {
-      s2ResultsPanel.clear(); s2ResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'));
-      lsResultsPanel.clear(); lsResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'));
-      s1ResultsPanel.clear(); s1ResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'));
-    }
-
-  } else { // Preview
-    contentPanel.add(previewMeta);
-    contentPanel.add(previewThumbPanel);
-    if (state.queryDone) {
-      contentPanel.add(smallLabel('\nCurrent display presets:'));
-      contentPanel.add(smallLabel('S2: ' + s2CompositeSelect.getValue()));
-      contentPanel.add(smallLabel('Landsat: ' + lsCompositeSelect.getValue()));
-      contentPanel.add(smallLabel('S1: ' + s1VizSelect.getValue()));
-    }
-  }
-}
-renderView();
+// Attach to map.widgets ONCE (no reset later)
+map.widgets().reset([uiContainer]);
 
 // -------------------------
-// POI
+// POI behavior
 // -------------------------
 map.onClick(function(coords) {
   if (!state.poi) {
@@ -668,6 +600,14 @@ function drawBuffer() {
 }
 
 // -------------------------
+// Live updates (no re-query)
+// -------------------------
+cloudRemovalCheckbox.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S2'); updateActiveLayersByGroup('LS'); refreshPreviewIfActive(); }});
+s2CompositeSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S2'); refreshPreviewIfActive(); }});
+lsCompositeSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('LS'); refreshPreviewIfActive(); }});
+s1VizSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S1'); refreshPreviewIfActive(); }});
+
+// -------------------------
 // Query
 // -------------------------
 function runQuery() {
@@ -675,11 +615,8 @@ function runQuery() {
   state.queryDone = false;
   setDisplayControlsEnabled(false);
 
-  uiState.view = 'Settings';
-  renderView();
-
   referenceDateLabel.setValue('Reference date: ' + fmtTodayUTC());
-  statusLabel.setValue('⏳ Building collections…');
+  statusLabel.setValue('⏳ Querying collections…');
 
   var buf = state.poi.buffer(bufferSlider.getValue() * 1000);
   var now = ee.Date(Date.now());
@@ -713,7 +650,7 @@ function runQuery() {
     .sort('system:time_start', false)
     .limit(limitN);
 
-  // Sentinel-1 (robust: no assumption on VV/VH; mode filter optional)
+  // Sentinel-1
   var s1 = ee.ImageCollection('COPERNICUS/S1_GRD')
     .filterBounds(buf)
     .filterDate(start, now)
@@ -721,11 +658,8 @@ function runQuery() {
     .limit(limitN);
 
   var modeFilter = getS1ModeFilter();
-  if (modeFilter !== 'ANY') {
-    s1 = s1.filter(ee.Filter.eq('instrumentMode', modeFilter));
-  }
+  if (modeFilter !== 'ANY') s1 = s1.filter(ee.Filter.eq('instrumentMode', modeFilter));
 
-  // Fetch lists in parallel
   var pending = 3;
   function doneOne() {
     pending--;
@@ -733,9 +667,8 @@ function runQuery() {
       state.queryDone = true;
       setDisplayControlsEnabled(true);
 
-      statusLabel.setValue('✅ Query complete. Go to Results and tick images to display.');
-      uiState.view = 'Results';
-      renderView();
+      statusLabel.setValue('✅ Query complete. Go to Results and tick dates/scenes.');
+      setView('Results');
 
       renderResults('S2');
       renderResults('LS');
@@ -743,64 +676,106 @@ function runQuery() {
     }
   }
 
-  statusLabel.setValue('⏳ Fetching Sentinel-2 list…');
-  fetchS2List(s2, function(items) {
-    state.lists.S2.items = items; state.lists.S2.page = 0;
-    s2CountLabel.setValue('S2: ' + items.length);
+  fetchS2GroupedByDate(s2, function(payload) {
+    state.lists.S2.items = payload.items;
+    state.lists.S2.totalTiles = payload.totalTiles;
+    state.lists.S2.page = 0;
+    s2CountLabel.setValue('S2 dates: ' + payload.items.length + ' (tiles: ' + payload.totalTiles + ')');
     doneOne();
   });
 
-  statusLabel.setValue('⏳ Fetching Landsat list…');
-  fetchLSList(ls, function(items) {
-    state.lists.LS.items = items; state.lists.LS.page = 0;
-    lsCountLabel.setValue('Landsat: ' + items.length);
+  fetchLSGroupedByDate(ls, function(payload) {
+    state.lists.LS.items = payload.items;
+    state.lists.LS.totalTiles = payload.totalTiles;
+    state.lists.LS.page = 0;
+    lsCountLabel.setValue('Landsat dates: ' + payload.items.length + ' (scenes: ' + payload.totalTiles + ')');
     doneOne();
   });
 
-  statusLabel.setValue('⏳ Fetching Sentinel-1 list…');
   fetchS1List(s1, function(items) {
-    state.lists.S1.items = items; state.lists.S1.page = 0;
-    s1CountLabel.setValue('S1: ' + items.length);
+    state.lists.S1.items = items;
+    state.lists.S1.page = 0;
+    s1CountLabel.setValue('S1 scenes: ' + items.length);
     doneOne();
   });
 }
 
-function fetchS2List(col, cb) {
+// ---- Grouped fetchers ----
+function fetchS2GroupedByDate(col, cb) {
   var dict = ee.Dictionary({
     ids: col.aggregate_array('system:id'),
     t: col.aggregate_array('system:time_start'),
     c: col.aggregate_array('CLOUDY_PIXEL_PERCENTAGE')
   });
+
   dict.evaluate(function(d) {
-    var items = [];
+    var byDate = {};
+    var totalTiles = 0;
+
     if (d && d.ids) {
       for (var i = 0; i < d.ids.length; i++) {
-        items.push({systemId: d.ids[i], date: fmtDateUTC(d.t[i]), cloud: (d.c && d.c[i] != null) ? Number(d.c[i]) : null});
+        totalTiles++;
+        var date = fmtDateUTC(d.t[i]);
+        if (!byDate[date]) byDate[date] = {date: date, ids: [], clouds: []};
+        byDate[date].ids.push(d.ids[i]);
+        if (d.c && d.c[i] != null) byDate[date].clouds.push(Number(d.c[i]));
       }
     }
-    cb(items);
+
+    var items = Object.keys(byDate).map(function(k) {
+      var g = byDate[k];
+      var mean = null;
+      if (g.clouds.length > 0) {
+        var sum = 0;
+        for (var j = 0; j < g.clouds.length; j++) sum += g.clouds[j];
+        mean = sum / g.clouds.length;
+      }
+      return {date: g.date, ids: g.ids, cloudMean: mean, tileCount: g.ids.length};
+    });
+
+    items.sort(function(a,b){ return b.date.localeCompare(a.date); });
+    cb({items: items, totalTiles: totalTiles});
   });
 }
 
-function fetchLSList(col, cb) {
+function fetchLSGroupedByDate(col, cb) {
   var dict = ee.Dictionary({
     ids: col.aggregate_array('system:id'),
     t: col.aggregate_array('system:time_start'),
     c: col.aggregate_array('CLOUD_COVER')
   });
+
   dict.evaluate(function(d) {
-    var items = [];
+    var byDate = {};
+    var totalTiles = 0;
+
     if (d && d.ids) {
       for (var i = 0; i < d.ids.length; i++) {
-        items.push({systemId: d.ids[i], date: fmtDateUTC(d.t[i]), cloud: (d.c && d.c[i] != null) ? Number(d.c[i]) : null});
+        totalTiles++;
+        var date = fmtDateUTC(d.t[i]);
+        if (!byDate[date]) byDate[date] = {date: date, ids: [], clouds: []};
+        byDate[date].ids.push(d.ids[i]);
+        if (d.c && d.c[i] != null) byDate[date].clouds.push(Number(d.c[i]));
       }
     }
-    cb(items);
+
+    var items = Object.keys(byDate).map(function(k) {
+      var g = byDate[k];
+      var mean = null;
+      if (g.clouds.length > 0) {
+        var sum = 0;
+        for (var j = 0; j < g.clouds.length; j++) sum += g.clouds[j];
+        mean = sum / g.clouds.length;
+      }
+      return {date: g.date, ids: g.ids, cloudMean: mean, tileCount: g.ids.length};
+    });
+
+    items.sort(function(a,b){ return b.date.localeCompare(a.date); });
+    cb({items: items, totalTiles: totalTiles});
   });
 }
 
 function fetchS1List(col, cb) {
-  // Pull mode + polarization list so we can adapt visualization per image
   var dict = ee.Dictionary({
     ids: col.aggregate_array('system:id'),
     t: col.aggregate_array('system:time_start'),
@@ -820,7 +795,7 @@ function fetchS1List(col, cb) {
           pass: d.pass ? d.pass[i] : null,
           relOrbit: (d.ro && d.ro[i] != null) ? d.ro[i] : null,
           mode: d.mode ? d.mode[i] : null,
-          pols: d.pols ? d.pols[i] : null // array like ["VV","VH"] or ["HH","HV"] or ["VV"]
+          pols: d.pols ? d.pols[i] : null
         });
       }
     }
@@ -850,13 +825,13 @@ function makePager(which, targetPanel) {
   var pageLbl = ui.Label('Page 1/1', {fontSize: '12px', margin: '6px 8px 0 8px'});
 
   var container = ui.Panel({layout: ui.Panel.Layout.flow('horizontal'), style: {margin: '0 0 6px 0'}});
-  container.add(prevBtn);
-  container.add(pageLbl);
-  container.add(nextBtn);
-
+  container.add(prevBtn); container.add(pageLbl); container.add(nextBtn);
   return {container: container, pageLbl: pageLbl};
 }
 
+// -------------------------
+// Render results
+// -------------------------
 function renderResults(which) {
   var list = state.lists[which];
   var items = list.items || [];
@@ -866,7 +841,6 @@ function renderResults(which) {
   var end = Math.min(items.length, start + PAGE_SIZE);
 
   var sensorKey = list.sensorKey;
-
   var panel = (which === 'S2') ? s2ResultsPanel : (which === 'LS') ? lsResultsPanel : s1ResultsPanel;
   var pager = (which === 'S2') ? s2Pager : (which === 'LS') ? lsPager : s1Pager;
 
@@ -880,18 +854,28 @@ function renderResults(which) {
 
   for (var i = start; i < end; i++) {
     (function(item) {
-      var labelBase = buildLabelBase(which, item);
-      var key = sensorKey + '::' + item.systemId;
+      var key, labelBase, idsOrId, s1meta;
+
+      if (which === 'S2' || which === 'LS') {
+        key = sensorKey + '::' + item.date;
+        idsOrId = item.ids;
+        labelBase = buildLabelBaseGrouped(which, item);
+        s1meta = null;
+      } else {
+        key = sensorKey + '::' + item.systemId;
+        idsOrId = item.systemId;
+        labelBase = buildLabelBaseS1(item);
+        s1meta = {pols: item.pols, mode: item.mode};
+      }
 
       var cb = ui.Checkbox({
         label: labelBase,
         value: !!state.resultsLayers[key],
         onChange: function(checked) {
-          var info = {key: key, systemId: item.systemId, labelBase: labelBase, item: item};
+          var info = {key: key, ids: idsOrId, labelBase: labelBase, s1: s1meta};
           if (checked) {
             addOrUpdateLayer(sensorKey, which, info);
-            setPreview(sensorKey, which, info);
-            uiState.view = 'Preview'; renderView();
+            setPreview(sensorKey, which, info); // update preview; stay in Results
           } else {
             removeLayer(key);
           }
@@ -902,9 +886,7 @@ function renderResults(which) {
         label: 'Preview',
         style: {margin: '0 0 0 6px'},
         onClick: function() {
-          var info = {key: key, systemId: item.systemId, labelBase: labelBase, item: item};
-          setPreview(sensorKey, which, info);
-          uiState.view = 'Preview'; renderView();
+          setPreview(sensorKey, which, {key: key, ids: idsOrId, labelBase: labelBase, s1: s1meta});
         }
       });
 
@@ -912,10 +894,9 @@ function renderResults(which) {
         label: 'Zoom',
         style: {margin: '0 0 0 6px'},
         onClick: function() {
-          map.centerObject(ee.Image(item.systemId).geometry(), 10);
-          var info = {key: key, systemId: item.systemId, labelBase: labelBase, item: item};
-          setPreview(sensorKey, which, info);
-          uiState.view = 'Preview'; renderView();
+          var firstId = (Array.isArray(idsOrId)) ? idsOrId[0] : idsOrId;
+          map.centerObject(ee.Image(firstId).geometry(), 10);
+          setPreview(sensorKey, which, {key: key, ids: idsOrId, labelBase: labelBase, s1: s1meta});
         }
       });
 
@@ -926,16 +907,13 @@ function renderResults(which) {
   }
 }
 
-function buildLabelBase(which, item) {
-  if (which === 'S2') {
-    var c = (item.cloud != null) ? item.cloud.toFixed(1) : 'n/a';
-    return item.date + ' | S2 | cloud ' + c + '%';
-  }
-  if (which === 'LS') {
-    var cl = (item.cloud != null) ? item.cloud.toFixed(1) : 'n/a';
-    return item.date + ' | Landsat | cloud ' + cl + '%';
-  }
-  // S1
+function buildLabelBaseGrouped(which, item) {
+  var mean = (item.cloudMean != null) ? item.cloudMean.toFixed(1) : 'n/a';
+  if (which === 'S2') return item.date + ' | S2 | tiles ' + item.tileCount + ' | cloud(mean) ' + mean + '%';
+  return item.date + ' | Landsat | scenes ' + item.tileCount + ' | cloud(mean) ' + mean + '%';
+}
+
+function buildLabelBaseS1(item) {
   var pass = item.pass ? String(item.pass) : 'n/a';
   var ro = (item.relOrbit != null) ? String(item.relOrbit) : 'n/a';
   var mode = item.mode ? String(item.mode) : 'n/a';
@@ -944,26 +922,22 @@ function buildLabelBase(which, item) {
 }
 
 // -------------------------
-// Layer add/update (live preset updates)
+// Layer management
 // -------------------------
-function groupFromWhich(which) {
-  return (which === 'S2') ? 'S2' : (which === 'LS') ? 'LS' : 'S1';
-}
+function groupFromWhich(which) { return (which === 'S2') ? 'S2' : (which === 'LS') ? 'LS' : 'S1'; }
 
 function addOrUpdateLayer(sensorKey, which, info) {
   var key = info.key;
 
-  // store meta (include S1 pols/mode for adaptive viz)
   state.layerMeta[key] = {
     group: groupFromWhich(which),
     sensorKey: sensorKey,
-    systemId: info.systemId,
+    ids: info.ids,
     labelBase: info.labelBase,
-    pols: info.item && info.item.pols ? info.item.pols : null,
-    mode: info.item && info.item.mode ? info.item.mode : null
+    s1: info.s1 || null
   };
 
-  var img = makeDisplayImage(sensorKey, info.systemId, state.layerMeta[key]);
+  var img = makeDisplayImage(sensorKey, info.ids, state.layerMeta[key]);
   var vis = getVisForSensor(sensorKey);
 
   if (!state.resultsLayers[key]) {
@@ -980,7 +954,7 @@ function updateLayerObject(key) {
   var layer = state.resultsLayers[key];
   if (!meta || !layer) return;
 
-  var img = makeDisplayImage(meta.sensorKey, meta.systemId, meta);
+  var img = makeDisplayImage(meta.sensorKey, meta.ids, meta);
   var vis = getVisForSensor(meta.sensorKey);
 
   if (layer.setEeObject && layer.setVisParams) {
@@ -990,7 +964,6 @@ function updateLayerObject(key) {
     return;
   }
 
-  // fallback: replace at same index
   var layers = map.layers();
   var idx = -1;
   for (var i = 0; i < layers.length(); i++) {
@@ -1018,7 +991,7 @@ function removeLayer(key) {
 
   if (state.activeKey === key) {
     previewThumbPanel.clear();
-    previewMeta.setValue('Select an image (Preview or tick) to see a thumbnail.');
+    previewMeta.setValue('Select an entry (Preview or tick) to see a thumbnail.');
     state.activeKey = null;
   }
 }
@@ -1027,17 +1000,11 @@ function refreshPreviewIfActive() {
   if (!state.activeKey) return;
   var meta = state.layerMeta[state.activeKey];
   if (!meta) return;
-
-  setPreview(meta.sensorKey, meta.group === 'S2' ? 'S2' : meta.group === 'LS' ? 'LS' : 'S1', {
-    key: state.activeKey,
-    systemId: meta.systemId,
-    labelBase: meta.labelBase,
-    item: {pols: meta.pols, mode: meta.mode}
-  });
+  setPreview(meta.sensorKey, meta.group, {key: state.activeKey, ids: meta.ids, labelBase: meta.labelBase, s1: meta.s1});
 }
 
 // -------------------------
-// Preview
+// Preview (no tab switching)
 // -------------------------
 function setPreview(sensorKey, which, info) {
   state.activeKey = info.key;
@@ -1045,12 +1012,9 @@ function setPreview(sensorKey, which, info) {
   if (!state.poi) return;
 
   var roi = state.poi.buffer(bufferSlider.getValue() * 1000).bounds();
-  var meta = state.layerMeta[info.key] || {
-    pols: info.item && info.item.pols ? info.item.pols : null,
-    mode: info.item && info.item.mode ? info.item.mode : null
-  };
+  var meta = state.layerMeta[info.key] || {s1: info.s1 || null};
 
-  var img = makeDisplayImage(sensorKey, info.systemId, meta);
+  var img = makeDisplayImage(sensorKey, info.ids, meta);
   var vis = getVisForSensor(sensorKey);
 
   var thumb = ui.Thumbnail({
@@ -1059,12 +1023,10 @@ function setPreview(sensorKey, which, info) {
     style: {margin: '6px 0 0 0', maxWidth: '256px'}
   });
 
-  var extra = '';
-  if (sensorKey.indexOf('S2_') === 0) extra = '\nS2 composite: ' + s2CompositeSelect.getValue();
-  if (sensorKey.indexOf('Landsat_') === 0) extra = '\nLandsat composite: ' + lsCompositeSelect.getValue();
-  if (sensorKey === 'S1') extra = '\nS1 viz: ' + s1VizSelect.getValue();
-
-  previewMeta.setValue(info.labelBase + '\nSystem ID: ' + info.systemId + extra);
+  previewMeta.setValue(
+    info.labelBase + '\nIDs: ' +
+    (Array.isArray(info.ids) ? (info.ids.length + ' tiles/scenes') : '1 scene')
+  );
   previewThumbPanel.add(thumb);
 }
 
@@ -1077,8 +1039,8 @@ function clearResultsOnly() {
   state.layerMeta = {};
   state.activeKey = null;
 
-  state.lists.S2.items = []; state.lists.S2.page = 0;
-  state.lists.LS.items = []; state.lists.LS.page = 0;
+  state.lists.S2.items = []; state.lists.S2.page = 0; state.lists.S2.totalTiles = 0;
+  state.lists.LS.items = []; state.lists.LS.page = 0; state.lists.LS.totalTiles = 0;
   state.lists.S1.items = []; state.lists.S1.page = 0;
 
   s2CountLabel.setValue('S2: 0');
@@ -1086,9 +1048,12 @@ function clearResultsOnly() {
   s1CountLabel.setValue('S1: 0');
 
   s2ResultsPanel.clear(); lsResultsPanel.clear(); s1ResultsPanel.clear();
+  s2ResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'));
+  lsResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'));
+  s1ResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'));
 
   previewThumbPanel.clear();
-  previewMeta.setValue('Select an image (Preview or tick) to see a thumbnail.');
+  previewMeta.setValue('Select an entry (Preview or tick) to see a thumbnail.');
 }
 
 function clearAll() {
@@ -1106,15 +1071,56 @@ function clearAll() {
 }
 
 // -------------------------
-// Init empty results
+// POI
 // -------------------------
-s2ResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'));
-lsResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'));
-s1ResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'));
+map.onClick(function(coords) {
+  if (!state.poi) {
+    setPOI(coords.lon, coords.lat);
+    statusLabel.setValue('POI set. Click "Query imagery".');
+    if (autoQueryCheckbox.getValue()) runQuery();
+    return;
+  }
+  if (state.poiPicking) {
+    setPOI(coords.lon, coords.lat);
+    state.poiPicking = false;
+    statusLabel.setValue('POI updated. Click "Query imagery" (or auto-query if enabled).');
+    if (autoQueryCheckbox.getValue()) runQuery();
+  }
+});
+
+function setPOI(lon, lat) {
+  if (state.poiLayer) map.layers().remove(state.poiLayer);
+  if (state.bufferLayer) map.layers().remove(state.bufferLayer);
+
+  state.poi = ee.Geometry.Point([lon, lat]);
+  poiInfo.setValue('POI: ' + lon.toFixed(6) + ', ' + lat.toFixed(6));
+
+  state.poiLayer = ui.Map.Layer(state.poi, {color: 'yellow'}, 'POI', true);
+  map.layers().add(state.poiLayer);
+
+  drawBuffer();
+  map.centerObject(state.poi, 12);
+}
+
+function drawBuffer() {
+  if (!state.poi) return;
+  if (state.bufferLayer) map.layers().remove(state.bufferLayer);
+
+  var buf = state.poi.buffer(bufferSlider.getValue() * 1000);
+  state.bufferLayer = ui.Map.Layer(buf, {color: 'yellow'}, 'AOI buffer', false);
+  map.layers().add(state.bufferLayer);
+}
 
 // -------------------------
-// Init view & map
+// Live updates (no re-query)
+// -------------------------
+cloudRemovalCheckbox.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S2'); updateActiveLayersByGroup('LS'); refreshPreviewIfActive(); }});
+s2CompositeSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S2'); refreshPreviewIfActive(); }});
+lsCompositeSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('LS'); refreshPreviewIfActive(); }});
+s1VizSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S1'); refreshPreviewIfActive(); }});
+
+// -------------------------
+// Init map
 // -------------------------
 map.setCenter(0, 0, 2);
-renderView();
-renderWidgets();
+statusLabel.setValue('Click the map to set the POI (first time).');
