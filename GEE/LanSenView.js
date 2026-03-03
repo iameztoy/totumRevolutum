@@ -5,10 +5,9 @@
  * - Avoid "Widgets can only be added to one panel at a time" by:
  *   1) Adding ONE uiContainer to map.widgets() ONCE (no re-adding panels)
  *   2) sidePanel is shown/hidden via style('shown') only (no re-parenting)
- *   3) Settings/Results/Preview are fixed panels added once; toggle via 'shown'
+ *   3) Settings/Results are fixed panels added once; toggle via 'shown'
  *
  * FEATURES:
- * - Stay in Results when toggling/previewing (preview updates, no tab switch)
  * - Group Sentinel-2 & Landsat results by DATE and load mosaics per date
  * - Sentinel-1 per-scene
  ****************************************/
@@ -34,7 +33,7 @@ var PAGE_SIZE = 10;
 // -------------------------
 var uiState = {
   panelOpen: true,
-  view: 'Settings' // 'Settings' | 'Results' | 'Preview'
+  view: 'Settings' // 'Settings' | 'Results' | 'Water Detection'
 };
 
 // -------------------------
@@ -101,7 +100,8 @@ var state = {
   // Active layers
   resultsLayers: {}, // key -> ui.Map.Layer
   layerMeta: {},     // key -> {group, sensorKey, ids, labelBase, s1:{pols,mode}}
-  activeKey: null,
+  waterLayer: null,
+  waterEntries: [],
 
   // Lists
   // S2/LS: items are {date, ids[], cloudMean, tileCount}
@@ -338,6 +338,78 @@ function makeS1DisplayImage(img, meta) {
   return pickAutoSingle();
 }
 
+function getWaterMethodsForType(sensorType) {
+  if (sensorType === 'RADAR') {
+    return [
+      'Co-pol backscatter threshold (dB)',
+      'Cross-pol backscatter threshold (dB)'
+    ];
+  }
+  return [
+    'MNDWI (Xu, 2006) threshold',
+    'AWEIsh (Feyisa et al., 2014) threshold'
+  ];
+}
+
+function detectWaterMask(sensorKey, idsOrId, meta, methodName, thresholdVal) {
+  var t = Number(thresholdVal);
+
+  if (sensorKey === 'S2_L1C' || sensorKey === 'S2_L2A') {
+    var s2 = ee.ImageCollection.fromImages((Array.isArray(idsOrId) ? idsOrId : [idsOrId]).map(function(id){ return ee.Image(id); })).mosaic().multiply(0.0001);
+    if (methodName.indexOf('MNDWI') === 0) {
+      return s2.normalizedDifference(['B3', 'B11']).rename('water').gt(t);
+    }
+    var awei = s2.expression(
+      '4*(GREEN - SWIR1) - (0.25*NIR + 2.75*SWIR2)',
+      {GREEN: s2.select('B3'), SWIR1: s2.select('B11'), NIR: s2.select('B8'), SWIR2: s2.select('B12')}
+    );
+    return awei.rename('water').gt(t);
+  }
+
+  if (sensorKey === 'Landsat_TOA' || sensorKey === 'Landsat_L2SR') {
+    var l = ee.ImageCollection.fromImages((Array.isArray(idsOrId) ? idsOrId : [idsOrId]).map(function(id){ return ee.Image(id); })).mosaic();
+    if (sensorKey === 'Landsat_L2SR') l = scaleLandsatSR(l);
+
+    var green = (sensorKey === 'Landsat_L2SR') ? l.select('SR_B3') : l.select('B3');
+    var nir = (sensorKey === 'Landsat_L2SR') ? l.select('SR_B5') : l.select('B5');
+    var swir1 = (sensorKey === 'Landsat_L2SR') ? l.select('SR_B6') : l.select('B6');
+    var swir2 = (sensorKey === 'Landsat_L2SR') ? l.select('SR_B7') : l.select('B7');
+
+    if (methodName.indexOf('MNDWI') === 0) {
+      return green.subtract(swir1).divide(green.add(swir1)).rename('water').gt(t);
+    }
+    var aweiL = ee.Image().expression(
+      '4*(GREEN - SWIR1) - (0.25*NIR + 2.75*SWIR2)',
+      {GREEN: green, SWIR1: swir1, NIR: nir, SWIR2: swir2}
+    );
+    return aweiL.rename('water').gt(t);
+  }
+
+  if (sensorKey === 'S1') {
+    var s1 = ee.Image(idsOrId);
+    var pols = meta && meta.s1 && meta.s1.pols ? meta.s1.pols : [];
+
+    var coBand = listHas(pols, 'VV') ? 'VV' : (listHas(pols, 'HH') ? 'HH' : 'VV');
+    var crossBand = listHas(pols, 'VH') ? 'VH' : (listHas(pols, 'HV') ? 'HV' : null);
+
+    var coImg = ee.Image(ee.Algorithms.If(s1.bandNames().contains(coBand), s1.select(coBand),
+      ee.Algorithms.If(s1.bandNames().contains('VV'), s1.select('VV'),
+        ee.Algorithms.If(s1.bandNames().contains('HH'), s1.select('HH'), s1.select(0)))));
+
+    if (methodName.indexOf('Co-pol') === 0 || !crossBand) {
+      return coImg.rename('water').lt(t);
+    }
+
+    var crossImg = ee.Image(ee.Algorithms.If(s1.bandNames().contains(crossBand), s1.select(crossBand),
+      ee.Algorithms.If(s1.bandNames().contains('VH'), s1.select('VH'),
+        ee.Algorithms.If(s1.bandNames().contains('HV'), s1.select('HV'), coImg))));
+
+    return crossImg.rename('water').lt(t);
+  }
+
+  return ee.Image(0);
+}
+
 // -------------------------
 // UI Widgets (created ONCE)
 // -------------------------
@@ -422,6 +494,36 @@ function setDisplayControlsEnabled(isEnabled) {
 }
 setDisplayControlsEnabled(false);
 
+// Water detection controls
+var waterSourceSelect = ui.Select({items: ['(run query first)'], value: '(run query first)', style: {stretch: 'horizontal'}});
+var waterMethodSelect = ui.Select({items: getWaterMethodsForType('OPTICAL'), value: getWaterMethodsForType('OPTICAL')[0], style: {stretch: 'horizontal'}});
+var waterThresholdBox = ui.Textbox({placeholder: 'Threshold', value: '0.0', style: {stretch: 'horizontal'}});
+var waterStatusLabel = ui.Label('Choose an image and method, then run detection.', {fontSize: '12px', color: '#555'});
+var runWaterBtn = ui.Button({
+  label: 'Run water detection',
+  style: {stretch: 'horizontal', fontWeight: 'bold'},
+  onClick: function() {
+    runWaterDetection();
+  }
+});
+var clearWaterBtn = ui.Button({
+  label: 'Clear water mask',
+  style: {stretch: 'horizontal'},
+  onClick: function() {
+    clearWaterMask();
+  }
+});
+
+waterSourceSelect.onChange(function() {
+  refreshWaterMethodChoices();
+});
+
+waterMethodSelect.onChange(function(m) {
+  if (m && m.indexOf('Co-pol') === 0) waterThresholdBox.setValue('-17');
+  else if (m && m.indexOf('Cross-pol') === 0) waterThresholdBox.setValue('-24');
+  else waterThresholdBox.setValue('0.0');
+});
+
 // Counts + result panels
 var s2CountLabel = ui.Label('S2: 0', {fontSize: '12px', color: '#555'});
 var lsCountLabel = ui.Label('Landsat: 0', {fontSize: '12px', color: '#555'});
@@ -439,37 +541,32 @@ s2ResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'
 lsResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'));
 s1ResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'));
 
-// Preview widgets
-var previewMeta = ui.Label('Select an entry (Preview or tick) to see a thumbnail.', {fontSize: '12px', color: '#555', whiteSpace: 'pre'});
-var previewThumbPanel = ui.Panel();
-
 // -------------------------
 // Fixed view panels (added ONCE)
 // -------------------------
 var settingsPanel = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
 var resultsPanel  = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
-var previewPanel  = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
+var waterPanel = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
 
 function setView(viewName) {
   uiState.view = viewName;
   settingsPanel.style().set('shown', viewName === 'Settings');
   resultsPanel.style().set('shown', viewName === 'Results');
-  previewPanel.style().set('shown', viewName === 'Preview');
+  waterPanel.style().set('shown', viewName === 'Water Detection');
 }
 
 // View buttons
 var viewBar = ui.Panel({layout: ui.Panel.Layout.flow('horizontal'), style: {margin: '0 0 8px 0'}});
 viewBar.add(ui.Button({label:'Settings', style:{margin:'0 4px 0 0'}, onClick:function(){ setView('Settings'); }}));
 viewBar.add(ui.Button({label:'Results',  style:{margin:'0 4px 0 0'}, onClick:function(){ setView('Results'); }}));
-viewBar.add(ui.Button({label:'Preview',  style:{margin:'0 4px 0 0'}, onClick:function(){ setView('Preview'); }}));
+viewBar.add(ui.Button({label:'Water Detection', style:{margin:'0 4px 0 0'}, onClick:function(){ setView('Water Detection'); }}));
 
 // Fill settings panel once
 settingsPanel.add(smallLabel(
   'How to use:\n' +
   '1) Click map to set POI\n' +
   '2) Query imagery\n' +
-  '3) Results: tick dates (S2/LS mosaics) or scenes (S1)\n' +
-  'Preview updates but you stay in Results.'
+  '3) Results: tick dates (S2/LS mosaics) or scenes (S1).'
 ));
 settingsPanel.add(referenceDateLabel);
 settingsPanel.add(statusLabel);
@@ -513,9 +610,18 @@ resultsPanel.add(s1CountLabel);
 resultsPanel.add(s1Pager.container);
 resultsPanel.add(s1ResultsPanel);
 
-// Fill preview panel once
-previewPanel.add(previewMeta);
-previewPanel.add(previewThumbPanel);
+waterPanel.add(ui.Label('Water Detection', {fontWeight:'bold', margin:'0 0 4px 0'}));
+waterPanel.add(smallLabel('Select one queried image/date'));
+waterPanel.add(waterSourceSelect);
+waterPanel.add(smallLabel('Method'));
+waterPanel.add(waterMethodSelect);
+waterPanel.add(smallLabel('Threshold'));
+waterPanel.add(waterThresholdBox);
+waterPanel.add(runWaterBtn);
+waterPanel.add(clearWaterBtn);
+waterPanel.add(smallLabel('Defaults: optical=0.0; SAR co-pol=-17 dB; SAR cross-pol=-24 dB.'));
+waterPanel.add(smallLabel('Output: blue water mask over selected source image.'));
+waterPanel.add(waterStatusLabel);
 
 // Start view
 setView('Settings');
@@ -536,7 +642,7 @@ sidePanel.add(subtitle);
 sidePanel.add(viewBar);
 sidePanel.add(settingsPanel);
 sidePanel.add(resultsPanel);
-sidePanel.add(previewPanel);
+sidePanel.add(waterPanel);
 
 // -------------------------
 // uiContainer: ONLY widget added to map.widgets() (never moved)
@@ -602,10 +708,105 @@ function drawBuffer() {
 // -------------------------
 // Live updates (no re-query)
 // -------------------------
-cloudRemovalCheckbox.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S2'); updateActiveLayersByGroup('LS'); refreshPreviewIfActive(); }});
-s2CompositeSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S2'); refreshPreviewIfActive(); }});
-lsCompositeSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('LS'); refreshPreviewIfActive(); }});
-s1VizSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S1'); refreshPreviewIfActive(); }});
+cloudRemovalCheckbox.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S2'); updateActiveLayersByGroup('LS'); }});
+s2CompositeSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S2'); }});
+lsCompositeSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('LS'); }});
+s1VizSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S1'); }});
+
+function getWaterSelectionEntries() {
+  var entries = [];
+
+  state.lists.S2.items.forEach(function(item) {
+    entries.push({
+      label: 'S2 | ' + item.date + ' | ' + item.tileCount + ' tiles',
+      sensorKey: state.lists.S2.sensorKey,
+      ids: item.ids,
+      which: 'S2',
+      meta: {s1: null}
+    });
+  });
+
+  state.lists.LS.items.forEach(function(item) {
+    entries.push({
+      label: 'Landsat | ' + item.date + ' | ' + item.tileCount + ' scenes',
+      sensorKey: state.lists.LS.sensorKey,
+      ids: item.ids,
+      which: 'LS',
+      meta: {s1: null}
+    });
+  });
+
+  state.lists.S1.items.forEach(function(item) {
+    entries.push({
+      label: 'S1 | ' + item.date + ' | ' + item.systemId,
+      sensorKey: state.lists.S1.sensorKey,
+      ids: item.systemId,
+      which: 'S1',
+      meta: {s1: {pols: item.pols, mode: item.mode}}
+    });
+  });
+
+  return entries;
+}
+
+function updateWaterSourceOptions() {
+  var entries = getWaterSelectionEntries();
+  state.waterEntries = entries;
+
+  if (entries.length === 0) {
+    waterSourceSelect.items().reset(['(run query first)']);
+    waterSourceSelect.setValue('(run query first)', true);
+    waterStatusLabel.setValue('No queried images yet. Run Query imagery first.');
+    return;
+  }
+
+  var labels = entries.map(function(e){ return e.label; });
+  waterSourceSelect.items().reset(labels);
+  waterSourceSelect.setValue(labels[0], true);
+  refreshWaterMethodChoices();
+}
+
+function getSelectedWaterEntry() {
+  var label = waterSourceSelect.getValue();
+  if (!label || !state.waterEntries) return null;
+  for (var i = 0; i < state.waterEntries.length; i++) {
+    if (state.waterEntries[i].label === label) return state.waterEntries[i];
+  }
+  return null;
+}
+
+function refreshWaterMethodChoices() {
+  var entry = getSelectedWaterEntry();
+  var type = (entry && entry.sensorKey === 'S1') ? 'RADAR' : 'OPTICAL';
+  var methods = getWaterMethodsForType(type);
+  waterMethodSelect.items().reset(methods);
+  waterMethodSelect.setValue(methods[0], true);
+  if (type === 'RADAR') waterThresholdBox.setValue('-17');
+  else waterThresholdBox.setValue('0.0');
+}
+
+function clearWaterMask() {
+  if (state.waterLayer) {
+    map.layers().remove(state.waterLayer);
+    state.waterLayer = null;
+  }
+  waterStatusLabel.setValue('Water mask cleared.');
+}
+
+function runWaterDetection() {
+  var entry = getSelectedWaterEntry();
+  if (!entry) return waterStatusLabel.setValue('Select a queried image/date first.');
+
+  var t = Number(waterThresholdBox.getValue());
+  if (isNaN(t)) return waterStatusLabel.setValue('Threshold must be numeric.');
+
+  clearWaterMask();
+  var mask = detectWaterMask(entry.sensorKey, entry.ids, entry.meta, waterMethodSelect.getValue(), t).selfMask();
+  var layer = ui.Map.Layer(mask, {palette: ['0000FF'], opacity: 0.65}, 'Water mask', true);
+  map.layers().add(layer);
+  state.waterLayer = layer;
+  waterStatusLabel.setValue('Water mask displayed in blue.');
+}
 
 // -------------------------
 // Query
@@ -673,6 +874,7 @@ function runQuery() {
       renderResults('S2');
       renderResults('LS');
       renderResults('S1');
+      updateWaterSourceOptions();
     }
   }
 
@@ -875,18 +1077,9 @@ function renderResults(which) {
           var info = {key: key, ids: idsOrId, labelBase: labelBase, s1: s1meta};
           if (checked) {
             addOrUpdateLayer(sensorKey, which, info);
-            setPreview(sensorKey, which, info); // update preview; stay in Results
           } else {
             removeLayer(key);
           }
-        }
-      });
-
-      var pBtn = ui.Button({
-        label: 'Preview',
-        style: {margin: '0 0 0 6px'},
-        onClick: function() {
-          setPreview(sensorKey, which, {key: key, ids: idsOrId, labelBase: labelBase, s1: s1meta});
         }
       });
 
@@ -896,12 +1089,11 @@ function renderResults(which) {
         onClick: function() {
           var firstId = (Array.isArray(idsOrId)) ? idsOrId[0] : idsOrId;
           map.centerObject(ee.Image(firstId).geometry(), 10);
-          setPreview(sensorKey, which, {key: key, ids: idsOrId, labelBase: labelBase, s1: s1meta});
         }
       });
 
       var row = ui.Panel({layout: ui.Panel.Layout.flow('horizontal'), style: {margin: '0 0 4px 0'}});
-      row.add(cb); row.add(pBtn); row.add(zBtn);
+      row.add(cb); row.add(zBtn);
       panel.add(row);
     })(items[i]);
   }
@@ -988,46 +1180,6 @@ function removeLayer(key) {
   map.layers().remove(state.resultsLayers[key]);
   delete state.resultsLayers[key];
   delete state.layerMeta[key];
-
-  if (state.activeKey === key) {
-    previewThumbPanel.clear();
-    previewMeta.setValue('Select an entry (Preview or tick) to see a thumbnail.');
-    state.activeKey = null;
-  }
-}
-
-function refreshPreviewIfActive() {
-  if (!state.activeKey) return;
-  var meta = state.layerMeta[state.activeKey];
-  if (!meta) return;
-  setPreview(meta.sensorKey, meta.group, {key: state.activeKey, ids: meta.ids, labelBase: meta.labelBase, s1: meta.s1});
-}
-
-// -------------------------
-// Preview (no tab switching)
-// -------------------------
-function setPreview(sensorKey, which, info) {
-  state.activeKey = info.key;
-  previewThumbPanel.clear();
-  if (!state.poi) return;
-
-  var roi = state.poi.buffer(bufferSlider.getValue() * 1000).bounds();
-  var meta = state.layerMeta[info.key] || {s1: info.s1 || null};
-
-  var img = makeDisplayImage(sensorKey, info.ids, meta);
-  var vis = getVisForSensor(sensorKey);
-
-  var thumb = ui.Thumbnail({
-    image: img.visualize(vis),
-    params: {region: roi, dimensions: 256, format: 'png'},
-    style: {margin: '6px 0 0 0', maxWidth: '256px'}
-  });
-
-  previewMeta.setValue(
-    info.labelBase + '\nIDs: ' +
-    (Array.isArray(info.ids) ? (info.ids.length + ' tiles/scenes') : '1 scene')
-  );
-  previewThumbPanel.add(thumb);
 }
 
 // -------------------------
@@ -1037,7 +1189,7 @@ function clearResultsOnly() {
   Object.keys(state.resultsLayers).forEach(function(k) { map.layers().remove(state.resultsLayers[k]); });
   state.resultsLayers = {};
   state.layerMeta = {};
-  state.activeKey = null;
+  state.waterEntries = [];
 
   state.lists.S2.items = []; state.lists.S2.page = 0; state.lists.S2.totalTiles = 0;
   state.lists.LS.items = []; state.lists.LS.page = 0; state.lists.LS.totalTiles = 0;
@@ -1052,8 +1204,8 @@ function clearResultsOnly() {
   lsResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'));
   s1ResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'));
 
-  previewThumbPanel.clear();
-  previewMeta.setValue('Select an entry (Preview or tick) to see a thumbnail.');
+  clearWaterMask();
+  updateWaterSourceOptions();
 }
 
 function clearAll() {
@@ -1114,10 +1266,10 @@ function drawBuffer() {
 // -------------------------
 // Live updates (no re-query)
 // -------------------------
-cloudRemovalCheckbox.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S2'); updateActiveLayersByGroup('LS'); refreshPreviewIfActive(); }});
-s2CompositeSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S2'); refreshPreviewIfActive(); }});
-lsCompositeSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('LS'); refreshPreviewIfActive(); }});
-s1VizSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S1'); refreshPreviewIfActive(); }});
+cloudRemovalCheckbox.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S2'); updateActiveLayersByGroup('LS'); }});
+s2CompositeSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S2'); }});
+lsCompositeSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('LS'); }});
+s1VizSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S1'); }});
 
 // -------------------------
 // Init map
