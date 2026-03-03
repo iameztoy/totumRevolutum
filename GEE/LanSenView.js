@@ -5,10 +5,9 @@
  * - Avoid "Widgets can only be added to one panel at a time" by:
  *   1) Adding ONE uiContainer to map.widgets() ONCE (no re-adding panels)
  *   2) sidePanel is shown/hidden via style('shown') only (no re-parenting)
- *   3) Settings/Results/Preview are fixed panels added once; toggle via 'shown'
+ *   3) Settings/Results are fixed panels added once; toggle via 'shown'
  *
  * FEATURES:
- * - Stay in Results when toggling/previewing (preview updates, no tab switch)
  * - Group Sentinel-2 & Landsat results by DATE and load mosaics per date
  * - Sentinel-1 per-scene
  ****************************************/
@@ -34,7 +33,7 @@ var PAGE_SIZE = 10;
 // -------------------------
 var uiState = {
   panelOpen: true,
-  view: 'Settings' // 'Settings' | 'Results' | 'Preview'
+  view: 'Settings' // 'Settings' | 'Results'
 };
 
 // -------------------------
@@ -101,7 +100,6 @@ var state = {
   // Active layers
   resultsLayers: {}, // key -> ui.Map.Layer
   layerMeta: {},     // key -> {group, sensorKey, ids, labelBase, s1:{pols,mode}}
-  activeKey: null,
 
   // Lists
   // S2/LS: items are {date, ids[], cloudMean, tileCount}
@@ -439,37 +437,29 @@ s2ResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'
 lsResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'));
 s1ResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'));
 
-// Preview widgets
-var previewMeta = ui.Label('Select an entry (Preview or tick) to see a thumbnail.', {fontSize: '12px', color: '#555', whiteSpace: 'pre'});
-var previewThumbPanel = ui.Panel();
-
 // -------------------------
 // Fixed view panels (added ONCE)
 // -------------------------
 var settingsPanel = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
 var resultsPanel  = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
-var previewPanel  = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
 
 function setView(viewName) {
   uiState.view = viewName;
   settingsPanel.style().set('shown', viewName === 'Settings');
   resultsPanel.style().set('shown', viewName === 'Results');
-  previewPanel.style().set('shown', viewName === 'Preview');
 }
 
 // View buttons
 var viewBar = ui.Panel({layout: ui.Panel.Layout.flow('horizontal'), style: {margin: '0 0 8px 0'}});
 viewBar.add(ui.Button({label:'Settings', style:{margin:'0 4px 0 0'}, onClick:function(){ setView('Settings'); }}));
 viewBar.add(ui.Button({label:'Results',  style:{margin:'0 4px 0 0'}, onClick:function(){ setView('Results'); }}));
-viewBar.add(ui.Button({label:'Preview',  style:{margin:'0 4px 0 0'}, onClick:function(){ setView('Preview'); }}));
 
 // Fill settings panel once
 settingsPanel.add(smallLabel(
   'How to use:\n' +
   '1) Click map to set POI\n' +
   '2) Query imagery\n' +
-  '3) Results: tick dates (S2/LS mosaics) or scenes (S1)\n' +
-  'Preview updates but you stay in Results.'
+  '3) Results: tick dates (S2/LS mosaics) or scenes (S1).'
 ));
 settingsPanel.add(referenceDateLabel);
 settingsPanel.add(statusLabel);
@@ -513,10 +503,6 @@ resultsPanel.add(s1CountLabel);
 resultsPanel.add(s1Pager.container);
 resultsPanel.add(s1ResultsPanel);
 
-// Fill preview panel once
-previewPanel.add(previewMeta);
-previewPanel.add(previewThumbPanel);
-
 // Start view
 setView('Settings');
 
@@ -536,7 +522,6 @@ sidePanel.add(subtitle);
 sidePanel.add(viewBar);
 sidePanel.add(settingsPanel);
 sidePanel.add(resultsPanel);
-sidePanel.add(previewPanel);
 
 // -------------------------
 // uiContainer: ONLY widget added to map.widgets() (never moved)
@@ -602,10 +587,10 @@ function drawBuffer() {
 // -------------------------
 // Live updates (no re-query)
 // -------------------------
-cloudRemovalCheckbox.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S2'); updateActiveLayersByGroup('LS'); refreshPreviewIfActive(); }});
-s2CompositeSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S2'); refreshPreviewIfActive(); }});
-lsCompositeSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('LS'); refreshPreviewIfActive(); }});
-s1VizSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S1'); refreshPreviewIfActive(); }});
+cloudRemovalCheckbox.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S2'); updateActiveLayersByGroup('LS'); }});
+s2CompositeSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S2'); }});
+lsCompositeSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('LS'); }});
+s1VizSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S1'); }});
 
 // -------------------------
 // Query
@@ -875,18 +860,9 @@ function renderResults(which) {
           var info = {key: key, ids: idsOrId, labelBase: labelBase, s1: s1meta};
           if (checked) {
             addOrUpdateLayer(sensorKey, which, info);
-            setPreview(sensorKey, which, info); // update preview; stay in Results
           } else {
             removeLayer(key);
           }
-        }
-      });
-
-      var pBtn = ui.Button({
-        label: 'Preview',
-        style: {margin: '0 0 0 6px'},
-        onClick: function() {
-          setPreview(sensorKey, which, {key: key, ids: idsOrId, labelBase: labelBase, s1: s1meta});
         }
       });
 
@@ -896,12 +872,11 @@ function renderResults(which) {
         onClick: function() {
           var firstId = (Array.isArray(idsOrId)) ? idsOrId[0] : idsOrId;
           map.centerObject(ee.Image(firstId).geometry(), 10);
-          setPreview(sensorKey, which, {key: key, ids: idsOrId, labelBase: labelBase, s1: s1meta});
         }
       });
 
       var row = ui.Panel({layout: ui.Panel.Layout.flow('horizontal'), style: {margin: '0 0 4px 0'}});
-      row.add(cb); row.add(pBtn); row.add(zBtn);
+      row.add(cb); row.add(zBtn);
       panel.add(row);
     })(items[i]);
   }
@@ -988,46 +963,6 @@ function removeLayer(key) {
   map.layers().remove(state.resultsLayers[key]);
   delete state.resultsLayers[key];
   delete state.layerMeta[key];
-
-  if (state.activeKey === key) {
-    previewThumbPanel.clear();
-    previewMeta.setValue('Select an entry (Preview or tick) to see a thumbnail.');
-    state.activeKey = null;
-  }
-}
-
-function refreshPreviewIfActive() {
-  if (!state.activeKey) return;
-  var meta = state.layerMeta[state.activeKey];
-  if (!meta) return;
-  setPreview(meta.sensorKey, meta.group, {key: state.activeKey, ids: meta.ids, labelBase: meta.labelBase, s1: meta.s1});
-}
-
-// -------------------------
-// Preview (no tab switching)
-// -------------------------
-function setPreview(sensorKey, which, info) {
-  state.activeKey = info.key;
-  previewThumbPanel.clear();
-  if (!state.poi) return;
-
-  var roi = state.poi.buffer(bufferSlider.getValue() * 1000).bounds();
-  var meta = state.layerMeta[info.key] || {s1: info.s1 || null};
-
-  var img = makeDisplayImage(sensorKey, info.ids, meta);
-  var vis = getVisForSensor(sensorKey);
-
-  var thumb = ui.Thumbnail({
-    image: img.visualize(vis),
-    params: {region: roi, dimensions: 256, format: 'png'},
-    style: {margin: '6px 0 0 0', maxWidth: '256px'}
-  });
-
-  previewMeta.setValue(
-    info.labelBase + '\nIDs: ' +
-    (Array.isArray(info.ids) ? (info.ids.length + ' tiles/scenes') : '1 scene')
-  );
-  previewThumbPanel.add(thumb);
 }
 
 // -------------------------
@@ -1037,7 +972,6 @@ function clearResultsOnly() {
   Object.keys(state.resultsLayers).forEach(function(k) { map.layers().remove(state.resultsLayers[k]); });
   state.resultsLayers = {};
   state.layerMeta = {};
-  state.activeKey = null;
 
   state.lists.S2.items = []; state.lists.S2.page = 0; state.lists.S2.totalTiles = 0;
   state.lists.LS.items = []; state.lists.LS.page = 0; state.lists.LS.totalTiles = 0;
@@ -1052,8 +986,6 @@ function clearResultsOnly() {
   lsResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'));
   s1ResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'));
 
-  previewThumbPanel.clear();
-  previewMeta.setValue('Select an entry (Preview or tick) to see a thumbnail.');
 }
 
 function clearAll() {
@@ -1114,10 +1046,10 @@ function drawBuffer() {
 // -------------------------
 // Live updates (no re-query)
 // -------------------------
-cloudRemovalCheckbox.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S2'); updateActiveLayersByGroup('LS'); refreshPreviewIfActive(); }});
-s2CompositeSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S2'); refreshPreviewIfActive(); }});
-lsCompositeSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('LS'); refreshPreviewIfActive(); }});
-s1VizSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S1'); refreshPreviewIfActive(); }});
+cloudRemovalCheckbox.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S2'); updateActiveLayersByGroup('LS'); }});
+s2CompositeSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S2'); }});
+lsCompositeSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('LS'); }});
+s1VizSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S1'); }});
 
 // -------------------------
 // Init map
