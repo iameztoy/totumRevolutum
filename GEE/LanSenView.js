@@ -129,6 +129,7 @@ function fmtDateUTC(ms) {
   return d.toISOString().slice(0, 10);
 }
 function fmtTodayUTC() { return new Date().toISOString().slice(0, 10); }
+function isIsoDate(str) { return /^\d{4}-\d{2}-\d{2}$/.test(String(str || '')); }
 
 function smallLabel(txt) {
   return ui.Label(txt, {fontSize: '12px', color: '#555', whiteSpace: 'pre', margin: '0 0 6px 0'});
@@ -463,6 +464,7 @@ var clearBtn = ui.Button({
     state.poiPicking = true;
     statusLabel.setValue('Cleared. Click the map to set a new POI.');
     referenceDateLabel.setValue('Reference date: (not queried yet)');
+    dateModeSelect.setValue('Current date (lookback)', true);
     setView('Settings');
   }
 });
@@ -472,6 +474,24 @@ var bufferSlider = ui.Slider({min: 0.5, max: 50, value: DEFAULTS.bufferKm, step:
 bufferSlider.onChange(function(){ if (state.poi) drawBuffer(); });
 
 var lookbackSlider = ui.Slider({min: 7, max: 365, value: DEFAULTS.lookbackDays, step: 1, style: {stretch: 'horizontal'}});
+var dateModeSelect = ui.Select({items: ['Current date (lookback)', 'Tailored start/end'], value: 'Current date (lookback)', style: {stretch: 'horizontal'}});
+var startDateBox = ui.Textbox({placeholder: 'YYYY-MM-DD', value: '', style: {stretch: 'horizontal'}});
+var endDateBox = ui.Textbox({placeholder: 'YYYY-MM-DD', value: '', style: {stretch: 'horizontal'}});
+
+function syncDateModeUi() {
+  var tailored = dateModeSelect.getValue() === 'Tailored start/end';
+  lookbackSlider.setDisabled(tailored);
+  startDateBox.setDisabled(!tailored);
+  endDateBox.setDisabled(!tailored);
+  if (!tailored) {
+    startDateBox.setValue('');
+    endDateBox.setValue('');
+  }
+}
+
+dateModeSelect.onChange(syncDateModeUi);
+syncDateModeUi();
+
 var cloudSlider = ui.Slider({min: 0, max: 100, value: DEFAULTS.cloudMax, step: 1, style: {stretch: 'horizontal'}});
 var maxImagesSlider = ui.Slider({min: 5, max: 400, value: DEFAULTS.maxImages, step: 1, style: {stretch: 'horizontal'}});
 
@@ -578,7 +598,10 @@ settingsPanel.add(clearBtn);
 
 settingsPanel.add(smallLabel('\nQuery settings'));
 settingsPanel.add(smallLabel('Buffer (km)')); settingsPanel.add(bufferSlider);
-settingsPanel.add(smallLabel('Lookback (days)')); settingsPanel.add(lookbackSlider);
+settingsPanel.add(smallLabel('Date mode')); settingsPanel.add(dateModeSelect);
+settingsPanel.add(smallLabel('Lookback (days; current-date mode)')); settingsPanel.add(lookbackSlider);
+settingsPanel.add(smallLabel('Tailored start date (YYYY-MM-DD)')); settingsPanel.add(startDateBox);
+settingsPanel.add(smallLabel('Tailored end date (YYYY-MM-DD)')); settingsPanel.add(endDateBox);
 settingsPanel.add(smallLabel('Max cloud (%) (optical filter)')); settingsPanel.add(cloudSlider);
 settingsPanel.add(smallLabel('Max images per sensor (before date grouping)')); settingsPanel.add(maxImagesSlider);
 settingsPanel.add(autoQueryCheckbox);
@@ -808,6 +831,35 @@ function runWaterDetection() {
   waterStatusLabel.setValue('Water mask displayed in blue.');
 }
 
+function getQueryDateRange() {
+  if (dateModeSelect.getValue() === 'Tailored start/end') {
+    var startStr = String(startDateBox.getValue() || '').trim();
+    var endStr = String(endDateBox.getValue() || '').trim();
+
+    if (!isIsoDate(startStr) || !isIsoDate(endStr)) {
+      return {error: 'Use YYYY-MM-DD for start/end in tailored mode.'};
+    }
+
+    var startJs = new Date(startStr + 'T00:00:00Z');
+    var endJs = new Date(endStr + 'T00:00:00Z');
+    if (isNaN(startJs.getTime()) || isNaN(endJs.getTime())) {
+      return {error: 'Invalid tailored dates.'};
+    }
+    if (startJs.getTime() > endJs.getTime()) {
+      return {error: 'Tailored start date must be before or equal to end date.'};
+    }
+
+    var eeStart = ee.Date(startStr);
+    var eeEndExclusive = ee.Date(endStr).advance(1, 'day');
+    return {start: eeStart, end: eeEndExclusive, label: 'Reference range: ' + startStr + ' → ' + endStr};
+  }
+
+  var nowStr = fmtTodayUTC();
+  var now = ee.Date(Date.now());
+  var start = now.advance(-lookbackSlider.getValue(), 'day');
+  return {start: start, end: now, label: 'Reference date: ' + nowStr + ' (lookback ' + lookbackSlider.getValue() + ' days)'};
+}
+
 // -------------------------
 // Query
 // -------------------------
@@ -816,12 +868,18 @@ function runQuery() {
   state.queryDone = false;
   setDisplayControlsEnabled(false);
 
-  referenceDateLabel.setValue('Reference date: ' + fmtTodayUTC());
+  var dateRange = getQueryDateRange();
+  if (dateRange.error) {
+    statusLabel.setValue('⚠️ ' + dateRange.error);
+    return;
+  }
+
+  referenceDateLabel.setValue(dateRange.label);
   statusLabel.setValue('⏳ Querying collections…');
 
   var buf = state.poi.buffer(bufferSlider.getValue() * 1000);
-  var now = ee.Date(Date.now());
-  var start = now.advance(-lookbackSlider.getValue(), 'day');
+  var start = dateRange.start;
+  var end = dateRange.end;
   var cloudMax = cloudSlider.getValue();
   var limitN = maxImagesSlider.getValue();
 
@@ -832,7 +890,7 @@ function runQuery() {
 
   var s2 = ee.ImageCollection(s2ColId)
     .filterBounds(buf)
-    .filterDate(start, now)
+    .filterDate(start, end)
     .filter(ee.Filter.lte('CLOUDY_PIXEL_PERCENTAGE', cloudMax))
     .sort('system:time_start', false)
     .limit(limitN);
@@ -846,7 +904,7 @@ function runQuery() {
     : ee.ImageCollection('LANDSAT/LC08/C02/T1_TOA').merge(ee.ImageCollection('LANDSAT/LC09/C02/T1_TOA'));
 
   ls = ls.filterBounds(buf)
-    .filterDate(start, now)
+    .filterDate(start, end)
     .filter(ee.Filter.lte('CLOUD_COVER', cloudMax))
     .sort('system:time_start', false)
     .limit(limitN);
@@ -854,7 +912,7 @@ function runQuery() {
   // Sentinel-1
   var s1 = ee.ImageCollection('COPERNICUS/S1_GRD')
     .filterBounds(buf)
-    .filterDate(start, now)
+    .filterDate(start, end)
     .sort('system:time_start', false)
     .limit(limitN);
 
@@ -1050,7 +1108,7 @@ function renderResults(which) {
   pager.pageLbl.setValue('Page ' + (page + 1) + '/' + totalPages);
 
   if (items.length === 0) {
-    panel.add(placeholder('No images found. Try bigger buffer, more lookback, or higher cloud threshold.'));
+    panel.add(placeholder('No images found. Try bigger buffer, wider date window, or higher cloud threshold.'));
     return;
   }
 
