@@ -107,7 +107,7 @@ var state = {
 
   // Lists
   // S2/LS: items are {date, ids[], cloudMean, tileCount}
-  // S1: items are {systemId, date, pass, relOrbit, mode, pols}
+  // S1: items are {date, ids[], tileCount, pass, relOrbit, mode, pols}
   lists: {
     S2: {items: [], page: 0, sensorKey: 'S2_L1C', totalTiles: 0},
     LS: {items: [], page: 0, sensorKey: 'Landsat_TOA', totalTiles: 0},
@@ -246,13 +246,14 @@ function getVisForSensor(sensorKey) {
 }
 
 // -------------------------
-// Build display images (mosaics for S2/LS)
+// Build display images (mosaics for S2/LS/S1)
 // -------------------------
 function makeDisplayImage(sensorKey, idsOrId, meta) {
   var ids = (Array.isArray(idsOrId)) ? idsOrId : [idsOrId];
 
   if (sensorKey === 'S1') {
-    return makeS1DisplayImage(ee.Image(ids[0]), meta);
+    var s1Mosaic = ee.ImageCollection.fromImages(ids.map(function(id){ return ee.Image(id); })).mosaic();
+    return makeS1DisplayImage(s1Mosaic, meta);
   }
 
   var col = ee.ImageCollection.fromImages(ids.map(function(id){ return ee.Image(id); }));
@@ -421,7 +422,8 @@ function detectWaterMask(sensorKey, idsOrId, meta, methodName, thresholdVal) {
   }
 
   if (sensorKey === 'S1') {
-    var s1 = ee.Image(idsOrId);
+    var s1Ids = (Array.isArray(idsOrId) ? idsOrId : [idsOrId]);
+    var s1 = ee.ImageCollection.fromImages(s1Ids.map(function(id){ return ee.Image(id); })).mosaic();
     var pols = meta && meta.s1 && meta.s1.pols ? meta.s1.pols : [];
 
     var coBand = listHas(pols, 'VV') ? 'VV' : (listHas(pols, 'HH') ? 'HH' : 'VV');
@@ -722,7 +724,7 @@ resultsPanel.add(lsCountLabel);
 resultsPanel.add(lsPager.container);
 resultsPanel.add(lsResultsPanel);
 
-resultsPanel.add(ui.Label('Sentinel-1 (per scene)', {fontWeight:'bold', margin:'10px 0 2px 0'}));
+resultsPanel.add(ui.Label('Sentinel-1 (grouped by date; mosaics)', {fontWeight:'bold', margin:'10px 0 2px 0'}));
 resultsPanel.add(s1CountLabel);
 resultsPanel.add(s1Pager.container);
 resultsPanel.add(s1ResultsPanel);
@@ -857,9 +859,9 @@ function getWaterSelectionEntries() {
 
   state.lists.S1.items.forEach(function(item) {
     entries.push({
-      label: 'S1 | ' + item.date + ' | ' + item.systemId,
+      label: 'S1 | ' + item.date + ' | ' + item.tileCount + ' scenes',
       sensorKey: state.lists.S1.sensorKey,
-      ids: item.systemId,
+      ids: item.ids,
       which: 'S1',
       meta: {s1: {pols: item.pols, mode: item.mode}}
     });
@@ -1055,10 +1057,10 @@ function runQuery() {
     doneOne();
   });
 
-  fetchS1List(s1, function(items) {
-    state.lists.S1.items = items;
+  fetchS1GroupedByDate(s1, function(payload) {
+    state.lists.S1.items = payload.items;
     state.lists.S1.page = 0;
-    s1CountLabel.setValue('S1 scenes: ' + items.length);
+    s1CountLabel.setValue('S1 dates: ' + payload.items.length + ' (scenes: ' + payload.totalTiles + ')');
     doneOne();
   });
 }
@@ -1138,7 +1140,7 @@ function fetchLSGroupedByDate(col, cb) {
   });
 }
 
-function fetchS1List(col, cb) {
+function fetchS1GroupedByDate(col, cb) {
   var dict = ee.Dictionary({
     ids: col.aggregate_array('system:id'),
     t: col.aggregate_array('system:time_start'),
@@ -1149,20 +1151,41 @@ function fetchS1List(col, cb) {
   });
 
   dict.evaluate(function(d) {
-    var items = [];
+    var byDate = {};
+    var totalTiles = 0;
+
     if (d && d.ids) {
       for (var i = 0; i < d.ids.length; i++) {
-        items.push({
-          systemId: d.ids[i],
-          date: fmtDateUTC(d.t[i]),
-          pass: d.pass ? d.pass[i] : null,
-          relOrbit: (d.ro && d.ro[i] != null) ? d.ro[i] : null,
-          mode: d.mode ? d.mode[i] : null,
-          pols: d.pols ? d.pols[i] : null
-        });
+        totalTiles++;
+        var date = fmtDateUTC(d.t[i]);
+        if (!byDate[date]) byDate[date] = {date: date, ids: [], pass: [], ro: [], mode: [], pols: []};
+        byDate[date].ids.push(d.ids[i]);
+        if (d.pass && d.pass[i] != null) byDate[date].pass.push(String(d.pass[i]));
+        if (d.ro && d.ro[i] != null) byDate[date].ro.push(String(d.ro[i]));
+        if (d.mode && d.mode[i] != null) byDate[date].mode.push(String(d.mode[i]));
+        if (d.pols && d.pols[i]) byDate[date].pols.push(d.pols[i]);
       }
     }
-    cb(items);
+
+    var items = Object.keys(byDate).map(function(k) {
+      var g = byDate[k];
+      var pass = (g.pass.length > 0) ? g.pass[0] : null;
+      var relOrbit = (g.ro.length > 0) ? g.ro[0] : null;
+      var mode = (g.mode.length > 0) ? g.mode[0] : null;
+      var pols = (g.pols.length > 0) ? g.pols[0] : null;
+      return {
+        date: g.date,
+        ids: g.ids,
+        tileCount: g.ids.length,
+        pass: pass,
+        relOrbit: relOrbit,
+        mode: mode,
+        pols: pols
+      };
+    });
+
+    items.sort(function(a,b){ return b.date.localeCompare(a.date); });
+    cb({items: items, totalTiles: totalTiles});
   });
 }
 
@@ -1225,8 +1248,8 @@ function renderResults(which) {
         labelBase = buildLabelBaseGrouped(which, item);
         s1meta = null;
       } else {
-        key = sensorKey + '::' + item.systemId;
-        idsOrId = item.systemId;
+        key = sensorKey + '::' + item.date;
+        idsOrId = item.ids;
         labelBase = buildLabelBaseS1(item);
         s1meta = {pols: item.pols, mode: item.mode};
       }
@@ -1271,7 +1294,7 @@ function buildLabelBaseS1(item) {
   var ro = (item.relOrbit != null) ? String(item.relOrbit) : 'n/a';
   var mode = item.mode ? String(item.mode) : 'n/a';
   var pols = item.pols ? item.pols.join(',') : 'n/a';
-  return item.date + ' | S1 | mode ' + mode + ' | pols ' + pols + ' | ' + pass + ' | relOrb ' + ro;
+  return item.date + ' | S1 | scenes ' + item.tileCount + ' | mode ' + mode + ' | pols ' + pols + ' | ' + pass + ' | relOrb ' + ro;
 }
 
 // -------------------------
