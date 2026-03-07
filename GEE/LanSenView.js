@@ -94,6 +94,8 @@ var state = {
   poiLayer: null,
   bufferLayer: null,
   poiPicking: true,
+  aoiMode: 'Point',
+  aoiPolygon: null,
 
   queryDone: false,
 
@@ -120,6 +122,38 @@ var map = ui.Map();
 map.setOptions('SATELLITE');
 map.style().set({cursor: 'crosshair'});
 ui.root.widgets().reset([map]);
+
+var drawingTools = map.drawingTools();
+drawingTools.setShown(false);
+
+function getDrawingLayer() {
+  if (drawingTools.layers().length() === 0) {
+    drawingTools.layers().add(ui.Map.GeometryLayer({geometries: [], name: 'AOI polygon', color: 'yellow'}));
+  }
+  return drawingTools.layers().get(0);
+}
+
+function clearDrawingLayerGeometry() {
+  if (drawingTools.layers().length() === 0) return;
+  var gl = drawingTools.layers().get(0);
+  gl.geometries().reset([]);
+}
+
+function updatePolygonFromDrawing() {
+  if (drawingTools.layers().length() === 0) return;
+  var gl = drawingTools.layers().get(0);
+  var geoms = gl.geometries();
+  if (geoms.length() === 0) {
+    state.aoiPolygon = null;
+    return;
+  }
+  state.aoiPolygon = ee.Geometry(geoms.get(0));
+  poiInfo.setValue('AOI polygon: ready');
+  statusLabel.setValue('AOI polygon ready. Click "Query imagery".');
+}
+
+drawingTools.onDraw(updatePolygonFromDrawing);
+drawingTools.onEdit(updatePolygonFromDrawing);
 
 // -------------------------
 // Helpers
@@ -452,7 +486,6 @@ var queryBtn = ui.Button({
   label: 'Query imagery',
   style: {stretch: 'horizontal', fontWeight: 'bold'},
   onClick: function() {
-    if (!state.poi) return statusLabel.setValue('⚠️ Please set a POI first (click map).');
     runQuery();
   }
 });
@@ -465,13 +498,70 @@ var clearBtn = ui.Button({
     statusLabel.setValue('Cleared. Click the map to set a new POI.');
     referenceDateLabel.setValue('Reference date: (not queried yet)');
     dateModeSelect.setValue('Current date (lookback)', true);
+    aoiModeSelect.setValue('Point', true);
     setView('Settings');
   }
 });
 
 // Query-time controls
 var bufferSlider = ui.Slider({min: 0.5, max: 50, value: DEFAULTS.bufferKm, step: 0.5, style: {stretch: 'horizontal'}});
-bufferSlider.onChange(function(){ if (state.poi) drawBuffer(); });
+bufferSlider.onChange(function(){ if (state.aoiMode === 'Point' && state.poi) drawBuffer(); });
+
+var aoiModeSelect = ui.Select({items: ['Point', 'Polygon'], value: 'Point', style: {stretch: 'horizontal'}});
+var drawPolygonBtn = ui.Button({
+  label: 'Draw AOI polygon',
+  style: {stretch: 'horizontal'},
+  onClick: function() {
+    if (aoiModeSelect.getValue() !== 'Polygon') return statusLabel.setValue('Switch AOI mode to Polygon first.');
+    getDrawingLayer();
+    clearDrawingLayerGeometry();
+    state.aoiPolygon = null;
+    drawingTools.setShown(true);
+    drawingTools.setShape('polygon');
+    drawingTools.draw();
+    statusLabel.setValue('Draw polygon on map (double-click to finish).');
+  }
+});
+var clearPolygonBtn = ui.Button({
+  label: 'Clear AOI polygon',
+  style: {stretch: 'horizontal'},
+  onClick: function() {
+    state.aoiPolygon = null;
+    clearDrawingLayerGeometry();
+    poiInfo.setValue('AOI polygon: (none)');
+    statusLabel.setValue('AOI polygon cleared.');
+  }
+});
+
+function syncAoiModeUi() {
+  var mode = aoiModeSelect.getValue();
+  state.aoiMode = mode;
+  var polygonMode = mode === 'Polygon';
+
+  drawPolygonBtn.setDisabled(!polygonMode);
+  clearPolygonBtn.setDisabled(!polygonMode);
+  bufferSlider.setDisabled(polygonMode);
+  drawingTools.setShown(polygonMode);
+
+  if (polygonMode) {
+    if (state.bufferLayer) { map.layers().remove(state.bufferLayer); state.bufferLayer = null; }
+    if (state.poiLayer) { map.layers().remove(state.poiLayer); state.poiLayer = null; }
+    poiInfo.setValue(state.aoiPolygon ? 'AOI polygon: ready' : 'AOI polygon: (none)');
+    statusLabel.setValue('Polygon mode active. Draw AOI polygon, then query imagery.');
+  } else {
+    drawingTools.stop();
+    drawingTools.setShown(false);
+    poiInfo.setValue(state.poi ? 'POI: point selected' : 'POI: (none)');
+    statusLabel.setValue('Point mode active. Click map to set POI.');
+    if (state.poi) {
+      state.poiLayer = ui.Map.Layer(state.poi, {color: 'yellow'}, 'POI', true);
+      map.layers().add(state.poiLayer);
+      drawBuffer();
+    }
+  }
+}
+
+aoiModeSelect.onChange(syncAoiModeUi);
 
 var lookbackSlider = ui.Slider({min: 7, max: 365, value: DEFAULTS.lookbackDays, step: 1, style: {stretch: 'horizontal'}});
 var dateModeSelect = ui.Select({items: ['Current date (lookback)', 'Tailored start/end'], value: 'Current date (lookback)', style: {stretch: 'horizontal'}});
@@ -491,6 +581,7 @@ function syncDateModeUi() {
 
 dateModeSelect.onChange(syncDateModeUi);
 syncDateModeUi();
+syncAoiModeUi();
 
 var cloudSlider = ui.Slider({min: 0, max: 100, value: DEFAULTS.cloudMax, step: 1, style: {stretch: 'horizontal'}});
 var maxImagesSlider = ui.Slider({min: 5, max: 400, value: DEFAULTS.maxImages, step: 1, style: {stretch: 'horizontal'}});
@@ -588,6 +679,9 @@ settingsPanel.add(smallLabel(
   '2) Query imagery\n' +
   '3) Results: tick dates (S2/LS mosaics) or scenes (S1).'
 ));
+settingsPanel.add(smallLabel('AOI mode')); settingsPanel.add(aoiModeSelect);
+settingsPanel.add(drawPolygonBtn);
+settingsPanel.add(clearPolygonBtn);
 settingsPanel.add(referenceDateLabel);
 settingsPanel.add(statusLabel);
 settingsPanel.add(poiInfo);
@@ -692,6 +786,7 @@ map.widgets().reset([uiContainer]);
 // POI behavior
 // -------------------------
 map.onClick(function(coords) {
+  if (state.aoiMode !== 'Point') return;
   if (!state.poi) {
     setPOI(coords.lon, coords.lat);
     statusLabel.setValue('POI set. Click "Query imagery".');
@@ -723,6 +818,7 @@ function setPOI(lon, lat) {
 function drawBuffer() {
   if (!state.poi) return;
   if (state.bufferLayer) map.layers().remove(state.bufferLayer);
+
   var buf = state.poi.buffer(bufferSlider.getValue() * 1000);
   state.bufferLayer = ui.Map.Layer(buf, {color: 'yellow'}, 'AOI buffer', false);
   map.layers().add(state.bufferLayer);
@@ -877,7 +973,14 @@ function runQuery() {
   referenceDateLabel.setValue(dateRange.label);
   statusLabel.setValue('⏳ Querying collections…');
 
-  var buf = state.poi.buffer(bufferSlider.getValue() * 1000);
+  var buf;
+  if (state.aoiMode === 'Polygon') {
+    if (!state.aoiPolygon) { statusLabel.setValue('⚠️ Draw an AOI polygon first.'); return; }
+    buf = state.aoiPolygon;
+  } else {
+    if (!state.poi) { statusLabel.setValue('⚠️ Please set a POI first (click map).'); return; }
+    buf = state.poi.buffer(bufferSlider.getValue() * 1000);
+  }
   var start = dateRange.start;
   var end = dateRange.end;
   var cloudMax = cloudSlider.getValue();
@@ -1274,16 +1377,20 @@ function clearAll() {
   state.poi = null;
   state.poiLayer = null;
   state.bufferLayer = null;
+  state.aoiPolygon = null;
+  clearDrawingLayerGeometry();
   poiInfo.setValue('POI: (none)');
 
   state.queryDone = false;
   setDisplayControlsEnabled(false);
+  aoiModeSelect.setValue('Point', true);
 }
 
 // -------------------------
 // POI
 // -------------------------
 map.onClick(function(coords) {
+  if (state.aoiMode !== 'Point') return;
   if (!state.poi) {
     setPOI(coords.lon, coords.lat);
     statusLabel.setValue('POI set. Click "Query imagery".');
