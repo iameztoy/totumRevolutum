@@ -234,7 +234,7 @@ function getLandsatSpacecraftId(img) {
 
 function landsatSelectBand(img, sensorKey, oliBand, tmBand) {
   var sc = getLandsatSpacecraftId(img);
-  var isOli = sc.equals('LANDSAT_8').or(sc.equals('LANDSAT_9'));
+  var isOli = ee.List(['LANDSAT_8', 'LANDSAT_9']).contains(sc);
 
   if (sensorKey === 'Landsat_L2SR') {
     return ee.Image(ee.Algorithms.If(
