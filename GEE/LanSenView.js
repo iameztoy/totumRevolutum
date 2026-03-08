@@ -55,17 +55,17 @@ var S2_COMPOSITES = [
 ];
 
 var LS_COMPOSITES = [
-  {name: 'Natural Color (4,3,2)',           type: 'rgb', nums: [4,3,2]},
-  {name: 'Color Infrared (5,4,3)',          type: 'rgb', nums: [5,4,3]},
-  {name: 'False Color (Urban) (7,6,4)',     type: 'rgb', nums: [7,6,4]},
-  {name: 'Agriculture (6,5,2)',             type: 'rgb', nums: [6,5,2]},
-  {name: 'Geology (7,6,2)',                 type: 'rgb', nums: [7,6,2]},
-  {name: 'Atmospheric Penetration (7,6,5)', type: 'rgb', nums: [7,6,5]},
-  {name: 'Healthy Vegetation (5,6,2)',      type: 'rgb', nums: [5,6,2]},
-  {name: 'Land/Water (5,6,4)',              type: 'rgb', nums: [5,6,4]},
-  {name: 'Shortwave Infrared (7,5,4)',      type: 'rgb', nums: [7,5,4]},
-  {name: 'Vegetation Analysis (6,5,4)',     type: 'rgb', nums: [6,5,4]},
-  {name: 'Bathymetric (4,3,1)',             type: 'rgb', nums: [4,3,1]},
+  {name: 'Natural Color (L8/9: 4,3,2 | L4-7: 3,2,1)',           type: 'rgb', bands: ['RED','GREEN','BLUE']},
+  {name: 'Color Infrared (L8/9: 5,4,3 | L4-7: 4,3,2)',          type: 'rgb', bands: ['NIR','RED','GREEN']},
+  {name: 'False Color (Urban) (L8/9: 7,6,4 | L4-7: 7,5,3)',     type: 'rgb', bands: ['SWIR2','SWIR1','RED']},
+  {name: 'Agriculture (L8/9: 6,5,2 | L4-7: 5,4,1)',             type: 'rgb', bands: ['SWIR1','NIR','BLUE']},
+  {name: 'Geology (L8/9: 7,6,2 | L4-7: 7,5,1)',                 type: 'rgb', bands: ['SWIR2','SWIR1','BLUE']},
+  {name: 'Atmospheric Penetration (L8/9: 7,6,5 | L4-7: 7,5,4)', type: 'rgb', bands: ['SWIR2','SWIR1','NIR']},
+  {name: 'Healthy Vegetation (L8/9: 5,6,2 | L4-7: 4,5,1)',      type: 'rgb', bands: ['NIR','SWIR1','BLUE']},
+  {name: 'Land/Water (L8/9: 5,6,4 | L4-7: 4,5,3)',              type: 'rgb', bands: ['NIR','SWIR1','RED']},
+  {name: 'Shortwave Infrared (L8/9: 7,5,4 | L4-7: 7,4,3)',      type: 'rgb', bands: ['SWIR2','NIR','RED']},
+  {name: 'Vegetation Analysis (L8/9: 6,5,4 | L4-7: 5,4,3)',     type: 'rgb', bands: ['SWIR1','NIR','RED']},
+  {name: 'Bathymetric (L8/9: 4,3,1* | L4-7: 3,2,1)',            type: 'rgb', bands: ['RED','GREEN','BLUE']},
   {name: 'NDVI',                            type: 'ndvi'}
 ];
 
@@ -269,19 +269,6 @@ function landsatToCommonBands(img, sensorKey) {
   ]);
 }
 
-function landsatCompositeNumsToCommonBands(nums) {
-  var map = {
-    1: 'BLUE',
-    2: 'GREEN',
-    3: 'RED',
-    4: 'NIR',
-    5: 'SWIR1',
-    6: 'SWIR1',
-    7: 'SWIR2'
-  };
-  return nums.map(function(n) { return map[n] || 'RED'; });
-}
-
 // -------------------------
 // Visualization params
 // -------------------------
@@ -347,8 +334,7 @@ function makeDisplayImage(sensorKey, idsOrId, meta) {
         return common.normalizedDifference(['NIR','RED']).rename('NDVI');
       }
 
-      var bands = landsatCompositeNumsToCommonBands(compL.nums);
-      return common.select(bands);
+      return common.select(compL.bands);
     });
 
     return col.mosaic();
