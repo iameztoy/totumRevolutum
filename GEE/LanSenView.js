@@ -225,25 +225,40 @@ function scaleLandsatSR(img) {
 
 
 function getLandsatSpacecraftId(img) {
-  return ee.String(ee.Algorithms.If(img.propertyNames().contains('SPACECRAFT_ID'), img.get('SPACECRAFT_ID'), 'LANDSAT_8'));
+  return ee.String(ee.Algorithms.If(
+    img.propertyNames().contains('SPACECRAFT_ID'),
+    img.get('SPACECRAFT_ID'),
+    ee.Algorithms.If(img.propertyNames().contains('SATELLITE'), img.get('SATELLITE'), 'LANDSAT_8')
+  ));
 }
 
-function landsatBandBySpacecraft(img, sensorKey, oliBand, tmBand) {
+function landsatSelectBand(img, sensorKey, oliBand, tmBand) {
   var sc = getLandsatSpacecraftId(img);
   var isOli = sc.equals('LANDSAT_8').or(sc.equals('LANDSAT_9'));
-  var prefix = (sensorKey === 'Landsat_L2SR') ? 'SR_B' : 'B';
-  var chosenNum = ee.Number(ee.Algorithms.If(isOli, oliBand, tmBand)).format();
-  return img.select(ee.String(prefix).cat(chosenNum));
+
+  if (sensorKey === 'Landsat_L2SR') {
+    return ee.Image(ee.Algorithms.If(
+      isOli,
+      img.select('SR_B' + oliBand),
+      img.select('SR_B' + tmBand)
+    ));
+  }
+
+  return ee.Image(ee.Algorithms.If(
+    isOli,
+    img.select('B' + oliBand),
+    img.select('B' + tmBand)
+  ));
 }
 
 function landsatToCommonBands(img, sensorKey) {
   var src = (sensorKey === 'Landsat_L2SR') ? scaleLandsatSR(img) : img;
-  var blue = landsatBandBySpacecraft(src, sensorKey, 2, 1);
-  var green = landsatBandBySpacecraft(src, sensorKey, 3, 2);
-  var red = landsatBandBySpacecraft(src, sensorKey, 4, 3);
-  var nir = landsatBandBySpacecraft(src, sensorKey, 5, 4);
-  var swir1 = landsatBandBySpacecraft(src, sensorKey, 6, 5);
-  var swir2 = landsatBandBySpacecraft(src, sensorKey, 7, 7);
+  var blue = landsatSelectBand(src, sensorKey, 2, 1);
+  var green = landsatSelectBand(src, sensorKey, 3, 2);
+  var red = landsatSelectBand(src, sensorKey, 4, 3);
+  var nir = landsatSelectBand(src, sensorKey, 5, 4);
+  var swir1 = landsatSelectBand(src, sensorKey, 6, 5);
+  var swir2 = landsatSelectBand(src, sensorKey, 7, 7);
   return ee.Image.cat([
     blue.rename('BLUE'),
     green.rename('GREEN'),
@@ -261,7 +276,7 @@ function landsatCompositeNumsToCommonBands(nums) {
     3: 'RED',
     4: 'NIR',
     5: 'SWIR1',
-    6: 'SWIR2',
+    6: 'SWIR1',
     7: 'SWIR2'
   };
   return nums.map(function(n) { return map[n] || 'RED'; });
@@ -1152,7 +1167,8 @@ function fetchLSGroupedByDate(col, cb) {
   var dict = ee.Dictionary({
     ids: col.aggregate_array('system:id'),
     t: col.aggregate_array('system:time_start'),
-    c: col.aggregate_array('CLOUD_COVER')
+    c: col.aggregate_array('CLOUD_COVER'),
+    spacecraft: col.aggregate_array('SPACECRAFT_ID')
   });
 
   dict.evaluate(function(d) {
@@ -1163,9 +1179,11 @@ function fetchLSGroupedByDate(col, cb) {
       for (var i = 0; i < d.ids.length; i++) {
         totalTiles++;
         var date = fmtDateUTC(d.t[i]);
-        if (!byDate[date]) byDate[date] = {date: date, ids: [], clouds: []};
+        if (!byDate[date]) byDate[date] = {date: date, ids: [], clouds: [], missions: {}};
         byDate[date].ids.push(d.ids[i]);
         if (d.c && d.c[i] != null) byDate[date].clouds.push(Number(d.c[i]));
+        var sc = (d.spacecraft && d.spacecraft[i]) ? String(d.spacecraft[i]) : null;
+        if (sc) byDate[date].missions[sc] = true;
       }
     }
 
@@ -1177,7 +1195,13 @@ function fetchLSGroupedByDate(col, cb) {
         for (var j = 0; j < g.clouds.length; j++) sum += g.clouds[j];
         mean = sum / g.clouds.length;
       }
-      return {date: g.date, ids: g.ids, cloudMean: mean, tileCount: g.ids.length};
+      return {
+        date: g.date,
+        ids: g.ids,
+        cloudMean: mean,
+        tileCount: g.ids.length,
+        missions: Object.keys(g.missions).sort()
+      };
     });
 
     items.sort(function(a,b){ return b.date.localeCompare(a.date); });
@@ -1331,7 +1355,8 @@ function renderResults(which) {
 function buildLabelBaseGrouped(which, item) {
   var mean = (item.cloudMean != null) ? item.cloudMean.toFixed(1) : 'n/a';
   if (which === 'S2') return item.date + ' | S2 | tiles ' + item.tileCount + ' | cloud(mean) ' + mean + '%';
-  return item.date + ' | Landsat | scenes ' + item.tileCount + ' | cloud(mean) ' + mean + '%';
+  var missions = (item.missions && item.missions.length) ? item.missions.join(',') : 'unknown mission';
+  return item.date + ' | Landsat | scenes ' + item.tileCount + ' | ' + missions + ' | cloud(mean) ' + mean + '%';
 }
 
 function buildLabelBaseS1(item) {
