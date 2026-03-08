@@ -223,6 +223,50 @@ function scaleLandsatSR(img) {
   return img.addBands(optical, null, true);
 }
 
+
+function getLandsatSpacecraftId(img) {
+  return ee.String(ee.Algorithms.If(img.propertyNames().contains('SPACECRAFT_ID'), img.get('SPACECRAFT_ID'), 'LANDSAT_8'));
+}
+
+function landsatBandBySpacecraft(img, sensorKey, oliBand, tmBand) {
+  var sc = getLandsatSpacecraftId(img);
+  var isOli = sc.equals('LANDSAT_8').or(sc.equals('LANDSAT_9'));
+  var prefix = (sensorKey === 'Landsat_L2SR') ? 'SR_B' : 'B';
+  var chosenNum = ee.Number(ee.Algorithms.If(isOli, oliBand, tmBand)).format();
+  return img.select(ee.String(prefix).cat(chosenNum));
+}
+
+function landsatToCommonBands(img, sensorKey) {
+  var src = (sensorKey === 'Landsat_L2SR') ? scaleLandsatSR(img) : img;
+  var blue = landsatBandBySpacecraft(src, sensorKey, 2, 1);
+  var green = landsatBandBySpacecraft(src, sensorKey, 3, 2);
+  var red = landsatBandBySpacecraft(src, sensorKey, 4, 3);
+  var nir = landsatBandBySpacecraft(src, sensorKey, 5, 4);
+  var swir1 = landsatBandBySpacecraft(src, sensorKey, 6, 5);
+  var swir2 = landsatBandBySpacecraft(src, sensorKey, 7, 7);
+  return ee.Image.cat([
+    blue.rename('BLUE'),
+    green.rename('GREEN'),
+    red.rename('RED'),
+    nir.rename('NIR'),
+    swir1.rename('SWIR1'),
+    swir2.rename('SWIR2')
+  ]);
+}
+
+function landsatCompositeNumsToCommonBands(nums) {
+  var map = {
+    1: 'BLUE',
+    2: 'GREEN',
+    3: 'RED',
+    4: 'NIR',
+    5: 'SWIR1',
+    6: 'SWIR2',
+    7: 'SWIR2'
+  };
+  return nums.map(function(n) { return map[n] || 'RED'; });
+}
+
 // -------------------------
 // Visualization params
 // -------------------------
@@ -283,20 +327,13 @@ function makeDisplayImage(sensorKey, idsOrId, meta) {
         img = ee.Image(ee.Algorithms.If(img.bandNames().contains('QA_PIXEL'), maskLandsatClouds_QA_PIXEL(img), img));
       }
 
+      var common = landsatToCommonBands(img, sensorKey);
       if (compL.type === 'ndvi') {
-        if (sensorKey === 'Landsat_L2SR') {
-          img = scaleLandsatSR(img);
-          return img.normalizedDifference(['SR_B5','SR_B4']).rename('NDVI');
-        }
-        return img.normalizedDifference(['B5','B4']).rename('NDVI');
+        return common.normalizedDifference(['NIR','RED']).rename('NDVI');
       }
 
-      function bandName(n) { return (sensorKey === 'Landsat_L2SR') ? ('SR_B' + n) : ('B' + n); }
-      var b = compL.nums;
-      var bands = [bandName(b[0]), bandName(b[1]), bandName(b[2])];
-
-      if (sensorKey === 'Landsat_L2SR') img = scaleLandsatSR(img);
-      return img.select(bands);
+      var bands = landsatCompositeNumsToCommonBands(compL.nums);
+      return common.select(bands);
     });
 
     return col.mosaic();
@@ -404,12 +441,12 @@ function detectWaterMask(sensorKey, idsOrId, meta, methodName, thresholdVal) {
 
   if (sensorKey === 'Landsat_TOA' || sensorKey === 'Landsat_L2SR') {
     var l = ee.ImageCollection.fromImages((Array.isArray(idsOrId) ? idsOrId : [idsOrId]).map(function(id){ return ee.Image(id); })).mosaic();
-    if (sensorKey === 'Landsat_L2SR') l = scaleLandsatSR(l);
+    var commonL = landsatToCommonBands(l, sensorKey);
 
-    var green = (sensorKey === 'Landsat_L2SR') ? l.select('SR_B3') : l.select('B3');
-    var nir = (sensorKey === 'Landsat_L2SR') ? l.select('SR_B5') : l.select('B5');
-    var swir1 = (sensorKey === 'Landsat_L2SR') ? l.select('SR_B6') : l.select('B6');
-    var swir2 = (sensorKey === 'Landsat_L2SR') ? l.select('SR_B7') : l.select('B7');
+    var green = commonL.select('GREEN');
+    var nir = commonL.select('NIR');
+    var swir1 = commonL.select('SWIR1');
+    var swir2 = commonL.select('SWIR2');
 
     if (methodName.indexOf('MNDWI') === 0) {
       return green.subtract(swir1).divide(green.add(swir1)).rename('water').gt(t);
@@ -451,7 +488,7 @@ function detectWaterMask(sensorKey, idsOrId, meta, methodName, thresholdVal) {
 // UI Widgets (created ONCE)
 // -------------------------
 var title = ui.Label('POI Imagery Explorer', {fontWeight: 'bold', fontSize: '18px', margin: '0 0 4px 0'});
-var subtitle = ui.Label('S2 + Landsat 8/9 + Sentinel-1', {fontSize: '12px', color: '#555', margin: '0 0 8px 0'});
+var subtitle = ui.Label('S2 + Landsat 4/5/7/8/9 + Sentinel-1', {fontSize: '12px', color: '#555', margin: '0 0 8px 0'});
 
 var referenceDateLabel = ui.Label('Reference date: (not queried yet)', {fontSize: '12px', color: '#555', margin: '0 0 6px 0'});
 var statusLabel = ui.Label('Click the map to set the POI (first time).', {fontSize: '12px', margin: '0 0 8px 0'});
@@ -1005,8 +1042,16 @@ function runQuery() {
   state.lists.LS.sensorKey = (lsMode === 'L2 (SR)') ? 'Landsat_L2SR' : 'Landsat_TOA';
 
   var ls = (lsMode === 'L2 (SR)')
-    ? ee.ImageCollection('LANDSAT/LC08/C02/T1_L2').merge(ee.ImageCollection('LANDSAT/LC09/C02/T1_L2'))
-    : ee.ImageCollection('LANDSAT/LC08/C02/T1_TOA').merge(ee.ImageCollection('LANDSAT/LC09/C02/T1_TOA'));
+    ? ee.ImageCollection('LANDSAT/LT04/C02/T1_L2')
+        .merge(ee.ImageCollection('LANDSAT/LT05/C02/T1_L2'))
+        .merge(ee.ImageCollection('LANDSAT/LE07/C02/T1_L2'))
+        .merge(ee.ImageCollection('LANDSAT/LC08/C02/T1_L2'))
+        .merge(ee.ImageCollection('LANDSAT/LC09/C02/T1_L2'))
+    : ee.ImageCollection('LANDSAT/LT04/C02/T1_TOA')
+        .merge(ee.ImageCollection('LANDSAT/LT05/C02/T1_TOA'))
+        .merge(ee.ImageCollection('LANDSAT/LE07/C02/T1_TOA'))
+        .merge(ee.ImageCollection('LANDSAT/LC08/C02/T1_TOA'))
+        .merge(ee.ImageCollection('LANDSAT/LC09/C02/T1_TOA'));
 
   ls = ls.filterBounds(buf)
     .filterDate(start, end)
