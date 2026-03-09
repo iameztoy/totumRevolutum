@@ -737,7 +737,7 @@ settingsPanel.add(smallLabel('Lookback (days; current-date mode)')); settingsPan
 settingsPanel.add(smallLabel('Tailored start date (YYYY-MM-DD)')); settingsPanel.add(startDateBox);
 settingsPanel.add(smallLabel('Tailored end date (YYYY-MM-DD)')); settingsPanel.add(endDateBox);
 settingsPanel.add(smallLabel('Max cloud (%) (optical filter)')); settingsPanel.add(cloudSlider);
-settingsPanel.add(smallLabel('Max images per sensor (before date grouping)')); settingsPanel.add(maxImagesSlider);
+settingsPanel.add(smallLabel('Max dates per sensor (keep full mosaic per date)')); settingsPanel.add(maxImagesSlider);
 settingsPanel.add(autoQueryCheckbox);
 
 settingsPanel.add(smallLabel('\nProducts / filters'));
@@ -1035,8 +1035,7 @@ function runQuery() {
     .filterBounds(buf)
     .filterDate(start, end)
     .filter(ee.Filter.lte('CLOUDY_PIXEL_PERCENTAGE', cloudMax))
-    .sort('system:time_start', false)
-    .limit(limitN);
+    .sort('system:time_start', false);
 
   // Landsat
   var lsMode = getLSLevel();
@@ -1057,15 +1056,13 @@ function runQuery() {
   ls = ls.filterBounds(buf)
     .filterDate(start, end)
     .filter(ee.Filter.lte('CLOUD_COVER', cloudMax))
-    .sort('system:time_start', false)
-    .limit(limitN);
+    .sort('system:time_start', false);
 
   // Sentinel-1
   var s1 = ee.ImageCollection('COPERNICUS/S1_GRD')
     .filterBounds(buf)
     .filterDate(start, end)
-    .sort('system:time_start', false)
-    .limit(limitN);
+    .sort('system:time_start', false);
 
   var modeFilter = getS1ModeFilter();
   if (modeFilter !== 'ANY') s1 = s1.filter(ee.Filter.eq('instrumentMode', modeFilter));
@@ -1087,7 +1084,7 @@ function runQuery() {
     }
   }
 
-  fetchS2GroupedByDate(s2, function(payload) {
+  fetchS2GroupedByDate(s2, limitN, function(payload) {
     state.lists.S2.items = payload.items;
     state.lists.S2.totalTiles = payload.totalTiles;
     state.lists.S2.page = 0;
@@ -1095,7 +1092,7 @@ function runQuery() {
     doneOne();
   });
 
-  fetchLSGroupedByDate(ls, function(payload) {
+  fetchLSGroupedByDate(ls, limitN, function(payload) {
     state.lists.LS.items = payload.items;
     state.lists.LS.totalTiles = payload.totalTiles;
     state.lists.LS.page = 0;
@@ -1103,7 +1100,7 @@ function runQuery() {
     doneOne();
   });
 
-  fetchS1GroupedByDate(s1, function(payload) {
+  fetchS1GroupedByDate(s1, limitN, function(payload) {
     state.lists.S1.items = payload.items;
     state.lists.S1.page = 0;
     s1CountLabel.setValue('S1 dates: ' + payload.items.length + ' (scenes: ' + payload.totalTiles + ')');
@@ -1112,7 +1109,7 @@ function runQuery() {
 }
 
 // ---- Grouped fetchers ----
-function fetchS2GroupedByDate(col, cb) {
+function fetchS2GroupedByDate(col, maxDates, cb) {
   var dict = ee.Dictionary({
     ids: col.aggregate_array('system:id'),
     t: col.aggregate_array('system:time_start'),
@@ -1145,11 +1142,12 @@ function fetchS2GroupedByDate(col, cb) {
     });
 
     items.sort(function(a,b){ return b.date.localeCompare(a.date); });
+    if (maxDates != null && maxDates > 0) items = items.slice(0, Number(maxDates));
     cb({items: items, totalTiles: totalTiles});
   });
 }
 
-function fetchLSGroupedByDate(col, cb) {
+function fetchLSGroupedByDate(col, maxDates, cb) {
   var dict = ee.Dictionary({
     ids: col.aggregate_array('system:id'),
     t: col.aggregate_array('system:time_start'),
@@ -1191,11 +1189,12 @@ function fetchLSGroupedByDate(col, cb) {
     });
 
     items.sort(function(a,b){ return b.date.localeCompare(a.date); });
+    if (maxDates != null && maxDates > 0) items = items.slice(0, Number(maxDates));
     cb({items: items, totalTiles: totalTiles});
   });
 }
 
-function fetchS1GroupedByDate(col, cb) {
+function fetchS1GroupedByDate(col, maxDates, cb) {
   var dict = ee.Dictionary({
     ids: col.aggregate_array('system:id'),
     t: col.aggregate_array('system:time_start'),
@@ -1240,6 +1239,7 @@ function fetchS1GroupedByDate(col, cb) {
     });
 
     items.sort(function(a,b){ return b.date.localeCompare(a.date); });
+    if (maxDates != null && maxDates > 0) items = items.slice(0, Number(maxDates));
     cb({items: items, totalTiles: totalTiles});
   });
 }
