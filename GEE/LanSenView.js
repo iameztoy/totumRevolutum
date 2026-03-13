@@ -104,6 +104,7 @@ var state = {
   layerMeta: {},     // key -> {group, sensorKey, ids, labelBase, s1:{pols,mode}}
   waterLayer: null,
   waterEntries: [],
+  s1ReducerLayer: null,
 
   // Lists
   // S2/LS: items are {date, ids[], cloudMean, tileCount}
@@ -637,11 +638,30 @@ var s2CompositeSelect = ui.Select({items: S2_COMPOSITES.map(function(c){return c
 var lsCompositeSelect = ui.Select({items: LS_COMPOSITES.map(function(c){return c.name;}), value: LS_COMPOSITES[0].name, style: {stretch: 'horizontal'}});
 var s1VizSelect = ui.Select({items: S1_VIZ.map(function(v){return v.name;}), value: S1_VIZ[0].name, style: {stretch: 'horizontal'}});
 
+var s1ReducerSelect = ui.Select({
+  items: ['Maximum', 'Minimum', 'Mean', 'Median'],
+  value: 'Maximum',
+  style: {stretch: 'horizontal'}
+});
+var runS1ReducerBtn = ui.Button({
+  label: 'Add Sentinel-1 reducer layer',
+  style: {stretch: 'horizontal'},
+  onClick: function() { runS1ReducerLayer(); }
+});
+var clearS1ReducerBtn = ui.Button({
+  label: 'Clear Sentinel-1 reducer layer',
+  style: {stretch: 'horizontal'},
+  onClick: function() { clearS1ReducerLayer(); }
+});
+
 function setDisplayControlsEnabled(isEnabled) {
   cloudRemovalCheckbox.setDisabled(!isEnabled);
   s2CompositeSelect.setDisabled(!isEnabled);
   lsCompositeSelect.setDisabled(!isEnabled);
   s1VizSelect.setDisabled(!isEnabled);
+  s1ReducerSelect.setDisabled(!isEnabled);
+  runS1ReducerBtn.setDisabled(!isEnabled);
+  clearS1ReducerBtn.setDisabled(!isEnabled);
 }
 setDisplayControlsEnabled(false);
 
@@ -767,6 +787,11 @@ resultsPanel.add(s1CountLabel);
 resultsPanel.add(s1Pager.container);
 resultsPanel.add(s1ResultsPanel);
 
+resultsPanel.add(smallLabel('Sentinel-1 reducer over filtered images'));
+resultsPanel.add(s1ReducerSelect);
+resultsPanel.add(runS1ReducerBtn);
+resultsPanel.add(clearS1ReducerBtn);
+
 waterPanel.add(ui.Label('Water Detection', {fontWeight:'bold', margin:'0 0 4px 0'}));
 waterPanel.add(smallLabel('Select one queried image/date'));
 waterPanel.add(waterSourceSelect);
@@ -871,6 +896,77 @@ cloudRemovalCheckbox.onChange(function(){ if(state.queryDone){ updateActiveLayer
 s2CompositeSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S2'); }});
 lsCompositeSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('LS'); }});
 s1VizSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup('S1'); }});
+
+function getS1Reducer() {
+  var v = s1ReducerSelect.getValue();
+  if (v === 'Minimum') return 'min';
+  if (v === 'Mean') return 'mean';
+  if (v === 'Median') return 'median';
+  return 'max';
+}
+
+function collectS1IdsAndPols() {
+  var ids = [];
+  var polSet = {};
+  state.lists.S1.items.forEach(function(item) {
+    if (item.ids) {
+      item.ids.forEach(function(id) { ids.push(id); });
+    }
+    if (item.pols) {
+      item.pols.forEach(function(p) { polSet[String(p)] = true; });
+    }
+  });
+  return {ids: ids, pols: Object.keys(polSet)};
+}
+
+function runS1ReducerLayer() {
+  if (!state.queryDone || !state.lists.S1.items.length) {
+    statusLabel.setValue('⚠️ Query Sentinel-1 images first.');
+    return;
+  }
+
+  var data = collectS1IdsAndPols();
+  if (!data.ids.length) {
+    statusLabel.setValue('⚠️ No Sentinel-1 scenes available for reducer.');
+    return;
+  }
+
+  var reducerName = getS1Reducer();
+  var col = ee.ImageCollection.fromImages(data.ids.map(function(id) { return ee.Image(id); }));
+  var reduced = ee.Image(ee.Algorithms.If(
+    reducerName === 'min', col.min(),
+    ee.Algorithms.If(reducerName === 'mean', col.mean(),
+      ee.Algorithms.If(reducerName === 'median', col.median(), col.max()))
+  ));
+
+  var display = makeS1DisplayImage(reduced, {s1: {pols: data.pols}});
+  var vis = getVisForSensor('S1');
+  var label = 'S1 reducer (' + reducerName + ') | scenes ' + data.ids.length;
+
+  if (!state.s1ReducerLayer) {
+    state.s1ReducerLayer = ui.Map.Layer(display, vis, label, true);
+    map.layers().add(state.s1ReducerLayer);
+  } else if (state.s1ReducerLayer.setEeObject && state.s1ReducerLayer.setVisParams) {
+    state.s1ReducerLayer.setEeObject(display);
+    state.s1ReducerLayer.setVisParams(vis);
+    if (state.s1ReducerLayer.setName) state.s1ReducerLayer.setName(label);
+  } else {
+    map.layers().remove(state.s1ReducerLayer);
+    state.s1ReducerLayer = ui.Map.Layer(display, vis, label, true);
+    map.layers().add(state.s1ReducerLayer);
+  }
+  statusLabel.setValue('✅ Added Sentinel-1 reducer layer (' + reducerName + ').');
+}
+
+function clearS1ReducerLayer() {
+  if (!state.s1ReducerLayer) return;
+  map.layers().remove(state.s1ReducerLayer);
+  state.s1ReducerLayer = null;
+}
+
+s1ReducerSelect.onChange(function() {
+  if (state.s1ReducerLayer && state.queryDone) runS1ReducerLayer();
+});
 
 function getWaterSelectionEntries() {
   var entries = [];
@@ -1430,6 +1526,7 @@ function clearResultsOnly() {
   state.resultsLayers = {};
   state.layerMeta = {};
   state.waterEntries = [];
+  clearS1ReducerLayer();
 
   state.lists.S2.items = []; state.lists.S2.page = 0; state.lists.S2.totalTiles = 0;
   state.lists.LS.items = []; state.lists.LS.page = 0; state.lists.LS.totalTiles = 0;
