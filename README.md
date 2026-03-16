@@ -37,7 +37,7 @@ A practical collection of Google Earth Engine (GEE) scripts for interactive mapp
 
 ## Notes
 
-- Some scripts reference project-specific assets (e.g., `projects/hardy-tenure-383607/...`). You will need to replace these with assets you can access.
+- Some scripts reference project-specific assets (e.g., `projects/Your-Repo/...`). You will need to replace these with assets you can access.
 - `ExportTile_scheleton.js` is intentionally a skeleton: use it as a base pattern for your own processing pipeline.
 - Benchmark scripts contain many tunable parameters; for reproducibility, keep AOI/year/method/seed/settings aligned between runs.
 
