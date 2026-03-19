@@ -42,6 +42,7 @@ var uiState = {
 // -------------------------
 var S2_COMPOSITES = [
   {name: 'True Color (4,3,2)',   type: 'rgb', bands: ['B4','B3','B2']},
+  {name: 'Highlight Optimized Natural Color (4,3,2)', type: 'highlight_rgb', bands: ['B4','B3','B2']},
   {name: 'False Color (8,4,3)',  type: 'rgb', bands: ['B8','B4','B3']},
   {name: 'SWIR (12,8,4)',        type: 'rgb', bands: ['B12','B8','B4']},
   {name: 'Agriculture (11,8,2)', type: 'rgb', bands: ['B11','B8','B2']},
@@ -57,6 +58,7 @@ var S2_COMPOSITES = [
 
 var LS_COMPOSITES = [
   {name: 'Natural Color (L8/9: 4,3,2 | L4-7: 3,2,1)',           type: 'rgb', bands: ['RED','GREEN','BLUE']},
+  {name: 'Highlight Optimized Natural Color (L8/9: 4,3,2 | L4-7: 3,2,1)', type: 'highlight_rgb', bands: ['RED','GREEN','BLUE']},
   {name: 'Color Infrared (L8/9: 5,4,3 | L4-7: 4,3,2)',          type: 'rgb', bands: ['NIR','RED','GREEN']},
   {name: 'False Color (Urban) (L8/9: 7,6,4 | L4-7: 7,5,3)',     type: 'rgb', bands: ['SWIR2','SWIR1','RED']},
   {name: 'Agriculture (L8/9: 6,5,2 | L4-7: 5,4,1)',             type: 'rgb', bands: ['SWIR1','NIR','BLUE']},
@@ -271,10 +273,29 @@ function landsatToCommonBands(img, sensorKey) {
   ]);
 }
 
+function applyHighlightOptimizedNaturalColor(img, bands, isSurfaceReflectance) {
+  var red = img.select(bands[0]).multiply(0.6);
+  var green = img.select(bands[1]).multiply(0.6);
+  var blue = img.select(bands[2]).multiply(0.6);
+
+  if (!isSurfaceReflectance) {
+    red = red.subtract(0.035);
+    green = green.subtract(0.035);
+    blue = blue.subtract(0.035);
+  }
+
+  return ee.Image.cat([
+    red.max(0).pow(1 / 3).rename('R'),
+    green.max(0).pow(1 / 3).rename('G'),
+    blue.max(0).pow(1 / 3).rename('B')
+  ]);
+}
+
 // -------------------------
 // Visualization params
 // -------------------------
 function opticalVisParams() { return {min: 0.02, max: 0.35, gamma: 1.1}; }
+function highlightNaturalColorVisParams() { return {min: 0, max: 0.9, gamma: 1}; }
 function ndviVisParams() { return {min: 0, max: 1, palette: ['#8c510a','#d8b365','#f6e8c3','#c7eae5','#5ab4ac','#01665e']}; }
 function s1BandVisParams() { return {min: -25, max: 0}; }
 function s1DiffVisParams() { return {min: -12, max: 6, palette: ['#2c7bb6','#abd9e9','#ffffbf','#fdae61','#d7191c']}; }
@@ -288,8 +309,18 @@ function getVisForSensor(sensorKey) {
     if (p.kind === 'auto_cross_minus_co') return s1DiffVisParams();
     return s1BandVisParams();
   }
-  if (sensorKey.indexOf('S2_') === 0) return (getS2Composite().type === 'ndvi') ? ndviVisParams() : opticalVisParams();
-  if (sensorKey.indexOf('Landsat_') === 0) return (getLSComposite().type === 'ndvi') ? ndviVisParams() : opticalVisParams();
+  if (sensorKey.indexOf('S2_') === 0) {
+    var s2Comp = getS2Composite();
+    if (s2Comp.type === 'ndvi') return ndviVisParams();
+    if (s2Comp.type === 'highlight_rgb') return highlightNaturalColorVisParams();
+    return opticalVisParams();
+  }
+  if (sensorKey.indexOf('Landsat_') === 0) {
+    var lsComp = getLSComposite();
+    if (lsComp.type === 'ndvi') return ndviVisParams();
+    if (lsComp.type === 'highlight_rgb') return highlightNaturalColorVisParams();
+    return opticalVisParams();
+  }
   return opticalVisParams();
 }
 
@@ -314,7 +345,11 @@ function makeDisplayImage(sensorKey, idsOrId, meta) {
       img = ee.Image(img);
       if (maskOn) img = (sensorKey === 'S2_L2A') ? maskS2_L2A_SCL(img) : maskS2_L1C_QA60(img);
       if (comp.type === 'ndvi') return img.normalizedDifference(['B8','B4']).rename('NDVI');
-      return img.select(comp.bands).multiply(0.0001);
+      var scaled = img.select(comp.bands).multiply(0.0001);
+      if (comp.type === 'highlight_rgb') {
+        return applyHighlightOptimizedNaturalColor(scaled, comp.bands, sensorKey === 'S2_L2A');
+      }
+      return scaled;
     });
 
     return col.mosaic();
@@ -334,6 +369,10 @@ function makeDisplayImage(sensorKey, idsOrId, meta) {
       var common = landsatToCommonBands(img, sensorKey);
       if (compL.type === 'ndvi') {
         return common.normalizedDifference(['NIR','RED']).rename('NDVI');
+      }
+
+      if (compL.type === 'highlight_rgb') {
+        return applyHighlightOptimizedNaturalColor(common, compL.bands, sensorKey === 'Landsat_L2SR');
       }
 
       return common.select(compL.bands);
