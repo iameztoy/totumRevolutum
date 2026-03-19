@@ -104,7 +104,8 @@ var state = {
 
   // Active layers
   resultsLayers: {}, // key -> ui.Map.Layer
-  layerMeta: {},     // key -> {group, sensorKey, ids, labelBase, s1:{pols,mode}}
+  layerMeta: {},     // key -> {group, sensorKey, ids, labelBase, s1:{pols,mode}, baseKey, vizKey, layerName}
+  layerFamilies: {}, // baseKey -> [variantKey1, variantKey2, ...]
   waterLayer: null,
   waterEntries: [],
   s1ReducerLayer: null,
@@ -677,6 +678,23 @@ var cloudRemovalCheckbox = ui.Checkbox({label: 'Cloud removal (display only)', v
 var s2CompositeSelect = ui.Select({items: S2_COMPOSITES.map(function(c){return c.name;}), value: S2_COMPOSITES[0].name, style: {stretch: 'horizontal'}});
 var lsCompositeSelect = ui.Select({items: LS_COMPOSITES.map(function(c){return c.name;}), value: LS_COMPOSITES[0].name, style: {stretch: 'horizontal'}});
 var s1VizSelect = ui.Select({items: S1_VIZ.map(function(v){return v.name;}), value: S1_VIZ[0].name, style: {stretch: 'horizontal'}});
+var keepPreviousVizCheckbox = ui.Checkbox({label: 'Keep previous visualization when changing bands', value: false});
+
+var s1ReducerSelect = ui.Select({
+  items: ['Maximum', 'Minimum', 'Mean', 'Median'],
+  value: 'Maximum',
+  style: {stretch: 'horizontal'}
+});
+var runS1ReducerBtn = ui.Button({
+  label: 'Add Sentinel-1 reducer layer',
+  style: {stretch: 'horizontal'},
+  onClick: function() { runS1ReducerLayer(); }
+});
+var clearS1ReducerBtn = ui.Button({
+  label: 'Clear Sentinel-1 reducer layer',
+  style: {stretch: 'horizontal'},
+  onClick: function() { clearS1ReducerLayer(); }
+});
 
 var s1ReducerSelect = ui.Select({
   items: ['Maximum', 'Minimum', 'Mean', 'Median'],
@@ -699,6 +717,7 @@ function setDisplayControlsEnabled(isEnabled) {
   s2CompositeSelect.setDisabled(!isEnabled);
   lsCompositeSelect.setDisabled(!isEnabled);
   s1VizSelect.setDisabled(!isEnabled);
+  keepPreviousVizCheckbox.setDisabled(!isEnabled);
   s1ReducerSelect.setDisabled(!isEnabled);
   runS1ReducerBtn.setDisabled(!isEnabled);
   clearS1ReducerBtn.setDisabled(!isEnabled);
@@ -811,6 +830,7 @@ resultsPanel.add(cloudRemovalCheckbox);
 resultsPanel.add(smallLabel('Sentinel-2 composite')); resultsPanel.add(s2CompositeSelect);
 resultsPanel.add(smallLabel('Landsat composite')); resultsPanel.add(lsCompositeSelect);
 resultsPanel.add(smallLabel('Sentinel-1 visualization')); resultsPanel.add(s1VizSelect);
+resultsPanel.add(keepPreviousVizCheckbox);
 
 resultsPanel.add(ui.Label('Sentinel-2 (grouped by date; mosaics)', {fontWeight:'bold', margin:'10px 0 2px 0'}));
 resultsPanel.add(s2CountLabel);
@@ -1447,7 +1467,7 @@ function renderResults(which) {
 
       var cb = ui.Checkbox({
         label: labelBase,
-        value: !!state.resultsLayers[key],
+        value: layerFamilyHasActive(key),
         onChange: function(checked) {
           var info = {key: key, ids: idsOrId, labelBase: labelBase, s1: s1meta};
           if (checked) {
@@ -1494,26 +1514,66 @@ function buildLabelBaseS1(item) {
 // -------------------------
 function groupFromWhich(which) { return (which === 'S2') ? 'S2' : (which === 'LS') ? 'LS' : 'S1'; }
 
-function addOrUpdateLayer(sensorKey, which, info) {
-  var key = info.key;
+function getCurrentVizNameForGroup(group) {
+  if (group === 'S2') return getS2Composite().name;
+  if (group === 'LS') return getLSComposite().name;
+  return getS1VizPreset().name;
+}
 
-  state.layerMeta[key] = {
-    group: groupFromWhich(which),
+function buildLayerName(labelBase, group, vizKey) {
+  if (!vizKey) return labelBase;
+  if (group === 'S1') return labelBase + ' | Viz: ' + vizKey;
+  return labelBase + ' | Composite: ' + vizKey;
+}
+
+function ensureLayerFamily(baseKey) {
+  if (!state.layerFamilies[baseKey]) state.layerFamilies[baseKey] = [];
+  return state.layerFamilies[baseKey];
+}
+
+function layerFamilyHasActive(baseKey) {
+  var family = state.layerFamilies[baseKey] || [];
+  for (var i = 0; i < family.length; i++) if (state.resultsLayers[family[i]]) return true;
+  return false;
+}
+
+function addVariantKeyToFamily(baseKey, variantKey) {
+  var family = ensureLayerFamily(baseKey);
+  if (family.indexOf(variantKey) === -1) family.push(variantKey);
+}
+
+function addOrUpdateLayer(sensorKey, which, info) {
+  var baseKey = info.key;
+  var group = groupFromWhich(which);
+  var vizKey = getCurrentVizNameForGroup(group);
+  var variantKey = baseKey;
+
+  if (keepPreviousVizCheckbox.getValue() && state.resultsLayers[baseKey]) {
+    variantKey = baseKey + '::' + vizKey;
+  }
+
+  addVariantKeyToFamily(baseKey, variantKey);
+
+  state.layerMeta[variantKey] = {
+    group: group,
     sensorKey: sensorKey,
     ids: info.ids,
     labelBase: info.labelBase,
-    s1: info.s1 || null
+    s1: info.s1 || null,
+    baseKey: baseKey,
+    vizKey: vizKey,
+    layerName: buildLayerName(info.labelBase, group, variantKey === baseKey ? null : vizKey)
   };
 
-  var img = makeDisplayImage(sensorKey, info.ids, state.layerMeta[key]);
+  var img = makeDisplayImage(sensorKey, info.ids, state.layerMeta[variantKey]);
   var vis = getVisForSensor(sensorKey);
 
-  if (!state.resultsLayers[key]) {
-    var layer = ui.Map.Layer(img, vis, info.labelBase, true);
+  if (!state.resultsLayers[variantKey]) {
+    var layer = ui.Map.Layer(img, vis, state.layerMeta[variantKey].layerName, true);
     map.layers().add(layer);
-    state.resultsLayers[key] = layer;
+    state.resultsLayers[variantKey] = layer;
   } else {
-    updateLayerObject(key);
+    updateLayerObject(variantKey);
   }
 }
 
@@ -1528,7 +1588,7 @@ function updateLayerObject(key) {
   if (layer.setEeObject && layer.setVisParams) {
     layer.setEeObject(img);
     layer.setVisParams(vis);
-    if (layer.setName) layer.setName(meta.labelBase);
+    if (layer.setName) layer.setName(meta.layerName || meta.labelBase);
     return;
   }
 
@@ -1538,24 +1598,66 @@ function updateLayerObject(key) {
     if (layers.get(i) === layer) { idx = i; break; }
   }
   if (idx >= 0) {
-    var newLayer = ui.Map.Layer(img, vis, meta.labelBase, true);
+    var newLayer = ui.Map.Layer(img, vis, meta.layerName || meta.labelBase, true);
     layers.set(idx, newLayer);
     state.resultsLayers[key] = newLayer;
   }
 }
 
 function updateActiveLayersByGroup(group) {
+  var preserve = keepPreviousVizCheckbox.getValue();
+  var baseKeys = {};
+
   Object.keys(state.resultsLayers).forEach(function(key) {
     var meta = state.layerMeta[key];
-    if (meta && meta.group === group) updateLayerObject(key);
+    if (meta && meta.group === group) {
+      baseKeys[meta.baseKey || key] = meta;
+    }
+  });
+
+  Object.keys(baseKeys).forEach(function(baseKey) {
+    var meta = baseKeys[baseKey];
+    if (!preserve) {
+      var family = state.layerFamilies[baseKey] || [baseKey];
+      for (var i = 0; i < family.length; i++) {
+        if (family[i] !== baseKey) removeVariantLayer(family[i]);
+      }
+      ensureLayerFamily(baseKey);
+      state.layerFamilies[baseKey] = [baseKey];
+      if (state.layerMeta[baseKey]) {
+        state.layerMeta[baseKey].vizKey = getCurrentVizNameForGroup(group);
+        state.layerMeta[baseKey].layerName = state.layerMeta[baseKey].labelBase;
+      }
+      updateLayerObject(baseKey);
+      return;
+    }
+
+    addOrUpdateLayer(meta.sensorKey, meta.group, {
+      key: baseKey,
+      ids: meta.ids,
+      labelBase: meta.labelBase,
+      s1: meta.s1
+    });
   });
 }
 
-function removeLayer(key) {
+function removeVariantLayer(key) {
   if (!state.resultsLayers[key]) return;
+  var meta = state.layerMeta[key];
   map.layers().remove(state.resultsLayers[key]);
   delete state.resultsLayers[key];
   delete state.layerMeta[key];
+
+  if (meta && meta.baseKey && state.layerFamilies[meta.baseKey]) {
+    state.layerFamilies[meta.baseKey] = state.layerFamilies[meta.baseKey].filter(function(k) { return k !== key; });
+    if (state.layerFamilies[meta.baseKey].length === 0) delete state.layerFamilies[meta.baseKey];
+  }
+}
+
+function removeLayer(key) {
+  var family = state.layerFamilies[key] || [key];
+  family.slice().forEach(function(variantKey) { removeVariantLayer(variantKey); });
+  delete state.layerFamilies[key];
 }
 
 // -------------------------
@@ -1565,6 +1667,7 @@ function clearResultsOnly() {
   Object.keys(state.resultsLayers).forEach(function(k) { map.layers().remove(state.resultsLayers[k]); });
   state.resultsLayers = {};
   state.layerMeta = {};
+  state.layerFamilies = {};
   state.waterEntries = [];
   clearS1ReducerLayer();
 
