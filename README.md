@@ -20,3 +20,4 @@ Implementation notes:
 - Sentinel-2 / Landsat TOA variants apply the tone-mapping style on top-of-atmosphere reflectance.
 - Sentinel-2 SR / Landsat SR variants apply the same transform without the extra offset used for TOA imagery.
 - Landsat uses harmonized common-color bands so the option stays visually consistent across Landsat 4/5/7/8/9.
+- The highlight-optimized option uses its own display stretch (`min: 0`, `max: 0.9`, `gamma: 1`) rather than the standard RGB stretch, because the cubic-root output is already strongly brightened and otherwise looks overexposed.

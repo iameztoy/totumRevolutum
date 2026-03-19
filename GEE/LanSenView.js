@@ -294,6 +294,7 @@ function applyHighlightOptimizedNaturalColor(img, bands, isSurfaceReflectance) {
 // Visualization params
 // -------------------------
 function opticalVisParams() { return {min: 0.02, max: 0.35, gamma: 1.1}; }
+function highlightNaturalColorVisParams() { return {min: 0, max: 0.9, gamma: 1}; }
 function ndviVisParams() { return {min: 0, max: 1, palette: ['#8c510a','#d8b365','#f6e8c3','#c7eae5','#5ab4ac','#01665e']}; }
 function s1BandVisParams() { return {min: -25, max: 0}; }
 function s1DiffVisParams() { return {min: -12, max: 6, palette: ['#2c7bb6','#abd9e9','#ffffbf','#fdae61','#d7191c']}; }
@@ -307,8 +308,18 @@ function getVisForSensor(sensorKey) {
     if (p.kind === 'auto_cross_minus_co') return s1DiffVisParams();
     return s1BandVisParams();
   }
-  if (sensorKey.indexOf('S2_') === 0) return (getS2Composite().type === 'ndvi') ? ndviVisParams() : opticalVisParams();
-  if (sensorKey.indexOf('Landsat_') === 0) return (getLSComposite().type === 'ndvi') ? ndviVisParams() : opticalVisParams();
+  if (sensorKey.indexOf('S2_') === 0) {
+    var s2Comp = getS2Composite();
+    if (s2Comp.type === 'ndvi') return ndviVisParams();
+    if (s2Comp.type === 'highlight_rgb') return highlightNaturalColorVisParams();
+    return opticalVisParams();
+  }
+  if (sensorKey.indexOf('Landsat_') === 0) {
+    var lsComp = getLSComposite();
+    if (lsComp.type === 'ndvi') return ndviVisParams();
+    if (lsComp.type === 'highlight_rgb') return highlightNaturalColorVisParams();
+    return opticalVisParams();
+  }
   return opticalVisParams();
 }
 
