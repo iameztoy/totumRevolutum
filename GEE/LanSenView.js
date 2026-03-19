@@ -10,6 +10,7 @@
  * FEATURES:
  * - Group Sentinel-2 & Landsat results by DATE and load mosaics per date
  * - Sentinel-1 per-scene
+ * Iban Ameztoy 2026
  ****************************************/
 
 // -------------------------
@@ -678,6 +679,22 @@ var s2CompositeSelect = ui.Select({items: S2_COMPOSITES.map(function(c){return c
 var lsCompositeSelect = ui.Select({items: LS_COMPOSITES.map(function(c){return c.name;}), value: LS_COMPOSITES[0].name, style: {stretch: 'horizontal'}});
 var s1VizSelect = ui.Select({items: S1_VIZ.map(function(v){return v.name;}), value: S1_VIZ[0].name, style: {stretch: 'horizontal'}});
 var keepPreviousVizCheckbox = ui.Checkbox({label: 'Keep previous visualization when changing bands', value: false});
+
+var s1ReducerSelect = ui.Select({
+  items: ['Maximum', 'Minimum', 'Mean', 'Median'],
+  value: 'Maximum',
+  style: {stretch: 'horizontal'}
+});
+var runS1ReducerBtn = ui.Button({
+  label: 'Add Sentinel-1 reducer layer',
+  style: {stretch: 'horizontal'},
+  onClick: function() { runS1ReducerLayer(); }
+});
+var clearS1ReducerBtn = ui.Button({
+  label: 'Clear Sentinel-1 reducer layer',
+  style: {stretch: 'horizontal'},
+  onClick: function() { clearS1ReducerLayer(); }
+});
 
 var s1ReducerSelect = ui.Select({
   items: ['Maximum', 'Minimum', 'Mean', 'Median'],
