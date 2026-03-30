@@ -46,6 +46,7 @@ print('Africa boundary:', africa);
 print('Number of Sentinel-1 images used:', s1.size());
 print('Max composite image (2022):', s1Max2022);
 
+/* //Not possible at this scale and method
 // 6) Optional export to Google Drive
 Export.image.toDrive({
   image: s1Max2022,
@@ -56,3 +57,4 @@ Export.image.toDrive({
   scale: 10,
   maxPixels: 1e13
 });
+*/
