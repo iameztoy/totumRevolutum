@@ -1,7 +1,6 @@
 // ----------------------------------------
 // Sentinel-1 GRD max composite over Africa
-// Year: 2022
-// Google Earth Engine JavaScript
+// Just created to check quick S1 coverage
 // ----------------------------------------
 
 // 1) Africa boundary
