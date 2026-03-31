@@ -1,4 +1,4 @@
-# totumRevolutum – Google Earth Engine Scripts
+# totumRevolutum – Google Earth Engine Scripts | Needs to be updated
 
 A practical collection of Google Earth Engine (GEE) scripts for interactive mapping, exploration, and land-cover benchmarking.
 
