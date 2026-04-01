@@ -803,26 +803,50 @@ function getVisibleResultLayerEntries() {
 }
 
 function getMapViewRegion() {
-  var b = map.getBounds(true);
-  if (!b || b.length < 4) return null;
+  function makeRegionFromBoundsArray(boundsArr) {
+    if (!boundsArr || boundsArr.length < 4) return null;
+    var west = Number(boundsArr[0]);
+    var south = Number(boundsArr[1]);
+    var east = Number(boundsArr[2]);
+    var north = Number(boundsArr[3]);
 
-  var west = Number(b[0]);
-  var south = Number(b[1]);
-  var east = Number(b[2]);
-  var north = Number(b[3]);
+    if (isNaN(west) || isNaN(south) || isNaN(east) || isNaN(north)) return null;
+    if (north <= south) return null;
 
-  if (isNaN(west) || isNaN(south) || isNaN(east) || isNaN(north)) return null;
-  if (north <= south) return null;
+    // If viewport crosses antimeridian, split into two valid rectangles.
+    if (east < west) {
+      return ee.Geometry.MultiPolygon([
+        [[[west, south], [180, south], [180, north], [west, north], [west, south]]],
+        [[[-180, south], [east, south], [east, north], [-180, north], [-180, south]]]
+      ], null, true);
+    }
 
-  // If viewport crosses antimeridian, split into two valid rectangles.
-  if (east < west) {
-    return ee.Geometry.MultiPolygon([
-      [[[west, south], [180, south], [180, north], [west, north], [west, south]]],
-      [[[-180, south], [east, south], [east, north], [-180, north], [-180, south]]]
-    ], null, true);
+    return ee.Geometry.Rectangle([west, south, east, north], null, true);
   }
 
-  return ee.Geometry.Rectangle([west, south, east, north], null, true);
+  var b = map.getBounds(true);
+
+  if (Array.isArray(b)) {
+    return makeRegionFromBoundsArray(b);
+  }
+
+  if (typeof b === 'string') {
+    var parts = b.split(',').map(function(v) { return Number(String(v).trim()); });
+    return makeRegionFromBoundsArray(parts);
+  }
+
+  if (b && b.type && b.coordinates) {
+    return ee.Geometry(b, null, true);
+  }
+
+  var bFallback = map.getBounds();
+  if (Array.isArray(bFallback)) return makeRegionFromBoundsArray(bFallback);
+  if (typeof bFallback === 'string') {
+    var partsFallback = bFallback.split(',').map(function(v) { return Number(String(v).trim()); });
+    return makeRegionFromBoundsArray(partsFallback);
+  }
+
+  return null;
 }
 
 function buildExportImageFromSelection() {
