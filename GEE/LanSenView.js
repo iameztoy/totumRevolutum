@@ -768,7 +768,7 @@ var exportTargetSelect = ui.Select({
   style: {stretch: 'horizontal'}
 });
 var exportFormatSelect = ui.Select({
-  items: ['GeoTIFF', 'Cloud Optimized GeoTIFF'],
+  items: ['GeoTIFF', 'Cloud Optimized GeoTIFF', 'PNG quicklook', 'JPG quicklook'],
   value: 'GeoTIFF',
   style: {stretch: 'horizontal'}
 });
@@ -857,12 +857,12 @@ function buildExportImageFromSelection() {
   if (sourceMode === 'Top visible result layer') {
     var top = entries[entries.length - 1];
     var imgTop = makeDisplayImage(top.meta.sensorKey, top.meta.ids, top.meta);
-    return {image: ee.Image(imgTop), count: 1, sensor: top.meta.sensorKey, label: top.meta.labelBase};
+    return {image: ee.Image(imgTop), count: 1, sensor: top.meta.sensorKey, label: top.meta.labelBase, vis: getVisForSensor(top.meta.sensorKey)};
   }
 
   var images = entries.map(function(e) { return makeDisplayImage(e.meta.sensorKey, e.meta.ids, e.meta); });
   var mos = ee.ImageCollection.fromImages(images).mosaic();
-  return {image: mos, count: entries.length, sensor: 'MIXED', label: 'Visible layers mosaic'};
+  return {image: mos, count: entries.length, sensor: 'MIXED', label: 'Visible layers mosaic', vis: opticalVisParams()};
 }
 
 function getSelectedExportScale(img) {
@@ -912,6 +912,12 @@ function runExport() {
     var desc = String(exportDescriptionBox.getValue() || 'LanSenView_export').trim() || 'LanSenView_export';
     var fmt = exportFormatSelect.getValue();
     var cloudOptimized = (fmt === 'Cloud Optimized GeoTIFF');
+    var isQuicklook = (fmt === 'PNG quicklook' || fmt === 'JPG quicklook');
+
+    if (isQuicklook && exportTargetSelect.getValue() === 'Google Drive task') {
+      exportStatusLabel.setValue('⚠️ PNG/JPG quicklooks are available for in-app download link target only.');
+      return;
+    }
 
     if (exportTargetSelect.getValue() === 'Google Drive task') {
       Export.image.toDrive({
@@ -925,6 +931,24 @@ function runExport() {
         formatOptions: cloudOptimized ? {cloudOptimized: true} : null
       });
       exportStatusLabel.setValue('✅ Drive export task created. Open the Tasks tab to Run/Cancel it.');
+      return;
+    }
+
+    if (isQuicklook) {
+      var quickFmt = (fmt === 'PNG quicklook') ? 'png' : 'jpg';
+      var vis = sel.vis || opticalVisParams();
+      var rendered = img.visualize(vis);
+      var thumbParams = {
+        region: region,
+        scale: scale,
+        format: quickFmt,
+        maxPixels: maxPixels
+      };
+      var quicklookUrl = rendered.getThumbURL(thumbParams);
+      state.exportDownloadUrl = quicklookUrl;
+      exportLinkLabel.setValue('Quicklook ready: ' + quicklookUrl);
+      exportLinkLabel.style().set('shown', true);
+      exportStatusLabel.setValue('✅ ' + fmt + ' quicklook link generated for current view.');
       return;
     }
 
@@ -1080,6 +1104,7 @@ exportPanel.add(exportDescriptionBox);
 exportPanel.add(runExportBtn);
 exportPanel.add(smallLabel('Tip: If multiple layers are visible, choose Top visible layer to avoid conflicts.'));
 exportPanel.add(smallLabel('Drive exports can be canceled from GEE Tasks tab.'));
+exportPanel.add(smallLabel('PNG/JPG quicklooks are rendered images (not analysis-grade GeoTIFF).'));
 exportPanel.add(exportStatusLabel);
 exportPanel.add(exportLinkLabel);
 
