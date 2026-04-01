@@ -10,6 +10,7 @@ A practical collection of Google Earth Engine (GEE) scripts for interactive mapp
 - `GEE/ExportTile_scheleton.js` – reusable tile-based export skeleton for batch exports from either grid tiles or global AOIs.
 - `GEE/AlphaEarth_Benchmark_Mode.js` – supervised land-cover workflow using satellite embeddings, with single-run and benchmark support.
 - `GEE/AlphaEarth_Benchmark_Mode_v2.js` – updated benchmark-oriented variant with CSV-first output and cleaner benchmark execution.
+- `GEE/GEE_noncommercial_eecu_monitor.ipynb` - EECUs calculation script | Source: [Open the notebook](https://github.com/google/earthengine-community/blob/master/guides/linked/cloud-monitoring/earth_engine_noncommercial_eecu_monitor.ipynb) (Google Repo)
 
 ## What these scripts are for
 
@@ -40,7 +41,6 @@ A practical collection of Google Earth Engine (GEE) scripts for interactive mapp
 - Some scripts reference project-specific assets (e.g., `projects/Your-Repo/...`). You will need to replace these with assets you can access.
 - `ExportTile_scheleton.js` is intentionally a skeleton: use it as a base pattern for your own processing pipeline.
 - Benchmark scripts contain many tunable parameters; for reproducibility, keep AOI/year/method/seed/settings aligned between runs.
-- EECUs calculation script | Source: [Open the notebook](https://github.com/google/earthengine-community/blob/master/guides/linked/cloud-monitoring/earth_engine_noncommercial_eecu_monitor.ipynb) See also: `GEE/GEE_noncommercial_eecu_monitor.ipynb`
 
 ## Suggested next additions
 
