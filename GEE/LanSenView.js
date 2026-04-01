@@ -167,6 +167,10 @@ function fmtDateUTC(ms) {
   var d = new Date(Number(ms));
   return d.toISOString().slice(0, 10);
 }
+function fmtTimeUTC(ms) {
+  var d = new Date(Number(ms));
+  return d.toISOString().slice(11, 16);
+}
 function fmtTodayUTC() { return new Date().toISOString().slice(0, 10); }
 function isIsoDate(str) { return /^\d{4}-\d{2}-\d{2}$/.test(String(str || '')); }
 
@@ -537,6 +541,8 @@ var referenceDateLabel = ui.Label('Reference date: (not queried yet)', {fontSize
 var statusLabel = ui.Label('Click the map to set the POI (first time).', {fontSize: '12px', margin: '0 0 8px 0'});
 var poiInfo = ui.Label('POI: (none)', {fontSize: '12px', margin: '0 0 8px 0'});
 
+var panelWidthSlider = ui.Slider({min: 320, max: 900, value: 520, step: 10, style: {stretch: 'horizontal'}});
+
 var panelToggleBtn = ui.Button({
   label: '✕',
   style: {fontWeight: 'bold', width: '42px', height: '34px', margin: '0', padding: '0'},
@@ -696,22 +702,6 @@ var clearS1ReducerBtn = ui.Button({
   onClick: function() { clearS1ReducerLayer(); }
 });
 
-var s1ReducerSelect = ui.Select({
-  items: ['Maximum', 'Minimum', 'Mean', 'Median'],
-  value: 'Maximum',
-  style: {stretch: 'horizontal'}
-});
-var runS1ReducerBtn = ui.Button({
-  label: 'Add Sentinel-1 reducer layer',
-  style: {stretch: 'horizontal'},
-  onClick: function() { runS1ReducerLayer(); }
-});
-var clearS1ReducerBtn = ui.Button({
-  label: 'Clear Sentinel-1 reducer layer',
-  style: {stretch: 'horizontal'},
-  onClick: function() { clearS1ReducerLayer(); }
-});
-
 function setDisplayControlsEnabled(isEnabled) {
   cloudRemovalCheckbox.setDisabled(!isEnabled);
   s2CompositeSelect.setDisabled(!isEnabled);
@@ -826,6 +816,8 @@ settingsPanel.add(smallLabel('Sentinel-1 mode filter')); settingsPanel.add(s1Mod
 
 // Fill results panel once
 resultsPanel.add(ui.Label('Display controls (no re-query)', {fontWeight:'bold', margin:'0 0 4px 0'}));
+resultsPanel.add(smallLabel('Panel width (px)'));
+resultsPanel.add(panelWidthSlider);
 resultsPanel.add(cloudRemovalCheckbox);
 resultsPanel.add(smallLabel('Sentinel-2 composite')); resultsPanel.add(s2CompositeSelect);
 resultsPanel.add(smallLabel('Landsat composite')); resultsPanel.add(lsCompositeSelect);
@@ -873,7 +865,7 @@ setView('Settings');
 // -------------------------
 var sidePanel = ui.Panel({
   style: {
-    width: '390px',
+    width: panelWidthSlider.getValue() + 'px',
     height: '740px',
     padding: '10px',
     backgroundColor: 'rgba(255,255,255,0.95)'
@@ -885,6 +877,10 @@ sidePanel.add(viewBar);
 sidePanel.add(settingsPanel);
 sidePanel.add(resultsPanel);
 sidePanel.add(waterPanel);
+
+panelWidthSlider.onChange(function(v) {
+  sidePanel.style().set('width', Number(v).toFixed(0) + 'px');
+});
 
 // -------------------------
 // uiContainer: ONLY widget added to map.widgets() (never moved)
@@ -1280,8 +1276,11 @@ function fetchS2GroupedByDate(col, maxDates, cb) {
       for (var i = 0; i < d.ids.length; i++) {
         totalTiles++;
         var date = fmtDateUTC(d.t[i]);
-        if (!byDate[date]) byDate[date] = {date: date, ids: [], clouds: []};
+        if (!byDate[date]) byDate[date] = {date: date, ids: [], clouds: [], tMin: null, tMax: null};
         byDate[date].ids.push(d.ids[i]);
+        var tVal = Number(d.t[i]);
+        if (byDate[date].tMin === null || tVal < byDate[date].tMin) byDate[date].tMin = tVal;
+        if (byDate[date].tMax === null || tVal > byDate[date].tMax) byDate[date].tMax = tVal;
         if (d.c && d.c[i] != null) byDate[date].clouds.push(Number(d.c[i]));
       }
     }
@@ -1294,7 +1293,7 @@ function fetchS2GroupedByDate(col, maxDates, cb) {
         for (var j = 0; j < g.clouds.length; j++) sum += g.clouds[j];
         mean = sum / g.clouds.length;
       }
-      return {date: g.date, ids: g.ids, cloudMean: mean, tileCount: g.ids.length};
+      return {date: g.date, ids: g.ids, cloudMean: mean, tileCount: g.ids.length, timeMin: g.tMin, timeMax: g.tMax};
     });
 
     items.sort(function(a,b){ return b.date.localeCompare(a.date); });
@@ -1319,8 +1318,11 @@ function fetchLSGroupedByDate(col, maxDates, cb) {
       for (var i = 0; i < d.ids.length; i++) {
         totalTiles++;
         var date = fmtDateUTC(d.t[i]);
-        if (!byDate[date]) byDate[date] = {date: date, ids: [], clouds: [], missions: {}};
+        if (!byDate[date]) byDate[date] = {date: date, ids: [], clouds: [], missions: {}, tMin: null, tMax: null};
         byDate[date].ids.push(d.ids[i]);
+        var tVal = Number(d.t[i]);
+        if (byDate[date].tMin === null || tVal < byDate[date].tMin) byDate[date].tMin = tVal;
+        if (byDate[date].tMax === null || tVal > byDate[date].tMax) byDate[date].tMax = tVal;
         if (d.c && d.c[i] != null) byDate[date].clouds.push(Number(d.c[i]));
         var sc = (d.spacecraft && d.spacecraft[i]) ? String(d.spacecraft[i]) : null;
         if (sc) byDate[date].missions[sc] = true;
@@ -1340,7 +1342,9 @@ function fetchLSGroupedByDate(col, maxDates, cb) {
         ids: g.ids,
         cloudMean: mean,
         tileCount: g.ids.length,
-        missions: Object.keys(g.missions).sort()
+        missions: Object.keys(g.missions).sort(),
+        timeMin: g.tMin,
+        timeMax: g.tMax
       };
     });
 
@@ -1368,8 +1372,11 @@ function fetchS1GroupedByDate(col, maxDates, cb) {
       for (var i = 0; i < d.ids.length; i++) {
         totalTiles++;
         var date = fmtDateUTC(d.t[i]);
-        if (!byDate[date]) byDate[date] = {date: date, ids: [], pass: [], ro: [], mode: [], pols: []};
+        if (!byDate[date]) byDate[date] = {date: date, ids: [], pass: [], ro: [], mode: [], pols: [], tMin: null, tMax: null};
         byDate[date].ids.push(d.ids[i]);
+        var tVal = Number(d.t[i]);
+        if (byDate[date].tMin === null || tVal < byDate[date].tMin) byDate[date].tMin = tVal;
+        if (byDate[date].tMax === null || tVal > byDate[date].tMax) byDate[date].tMax = tVal;
         if (d.pass && d.pass[i] != null) byDate[date].pass.push(String(d.pass[i]));
         if (d.ro && d.ro[i] != null) byDate[date].ro.push(String(d.ro[i]));
         if (d.mode && d.mode[i] != null) byDate[date].mode.push(String(d.mode[i]));
@@ -1390,7 +1397,9 @@ function fetchS1GroupedByDate(col, maxDates, cb) {
         pass: pass,
         relOrbit: relOrbit,
         mode: mode,
-        pols: pols
+        pols: pols,
+        timeMin: g.tMin,
+        timeMax: g.tMax
       };
     });
 
@@ -1494,11 +1503,24 @@ function renderResults(which) {
   }
 }
 
+function landsatMissionShortName(sc) {
+  var s = String(sc || '');
+  if (s === 'LANDSAT_9') return 'L9';
+  if (s === 'LANDSAT_8') return 'L8';
+  if (s === 'LANDSAT_7') return 'L7';
+  if (s === 'LANDSAT_5') return 'L5';
+  if (s === 'LANDSAT_4') return 'L4';
+  return s;
+}
+
 function buildLabelBaseGrouped(which, item) {
-  var mean = (item.cloudMean != null) ? item.cloudMean.toFixed(1) : 'n/a';
-  if (which === 'S2') return item.date + ' | S2 | tiles ' + item.tileCount + ' | cloud(mean) ' + mean + '%';
-  var missions = (item.missions && item.missions.length) ? item.missions.join(',') : 'unknown mission';
-  return item.date + ' | Landsat | scenes ' + item.tileCount + ' | ' + missions + ' | cloud(mean) ' + mean + '%';
+  var mean = (item.cloudMean != null) ? item.cloudMean.toFixed(1) + '%' : 'n/a';
+  var timeLabel = (item.timeMin != null) ? fmtTimeUTC(item.timeMin) + ((item.timeMax != null && item.timeMax !== item.timeMin) ? '–' + fmtTimeUTC(item.timeMax) : '') + ' UTC' : 'time n/a';
+  if (which === 'S2') return item.date + ' | ' + timeLabel + ' | tiles ' + item.tileCount + ' | cloud ' + mean;
+  var missions = (item.missions && item.missions.length)
+    ? item.missions.map(landsatMissionShortName).join(',')
+    : 'L?';
+  return item.date + ' | ' + timeLabel + ' | scenes ' + item.tileCount + ' | ' + missions + ' | cloud ' + mean;
 }
 
 function buildLabelBaseS1(item) {
@@ -1506,7 +1528,8 @@ function buildLabelBaseS1(item) {
   var ro = (item.relOrbit != null) ? String(item.relOrbit) : 'n/a';
   var mode = item.mode ? String(item.mode) : 'n/a';
   var pols = item.pols ? item.pols.join(',') : 'n/a';
-  return item.date + ' | S1 | scenes ' + item.tileCount + ' | mode ' + mode + ' | pols ' + pols + ' | ' + pass + ' | relOrb ' + ro;
+  var timeLabel = (item.timeMin != null) ? fmtTimeUTC(item.timeMin) + ((item.timeMax != null && item.timeMax !== item.timeMin) ? '–' + fmtTimeUTC(item.timeMax) : '') + ' UTC' : 'time n/a';
+  return item.date + ' | ' + timeLabel + ' | scenes ' + item.tileCount + ' | mode ' + mode + ' | pols ' + pols + ' | ' + pass + ' | relOrb ' + ro;
 }
 
 // -------------------------
