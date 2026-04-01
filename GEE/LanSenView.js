@@ -94,6 +94,7 @@ function getByName(list, name, fallbackIdx) {
 // -------------------------
 var state = {
   poi: null,
+  poiLonLat: null,
   poiLayer: null,
   bufferLayer: null,
   poiPicking: true,
@@ -173,6 +174,183 @@ function fmtTimeUTC(ms) {
 }
 function fmtTodayUTC() { return new Date().toISOString().slice(0, 10); }
 function isIsoDate(str) { return /^\d{4}-\d{2}-\d{2}$/.test(String(str || '')); }
+
+
+function clampNum(n, min, max, fallback) {
+  var x = Number(n);
+  if (!isFinite(x)) return fallback;
+  if (x < min) return min;
+  if (x > max) return max;
+  return x;
+}
+function encodeShareState(obj) {
+  try {
+    return encodeURIComponent(JSON.stringify(obj));
+  } catch (e) {
+    return '';
+  }
+}
+
+function decodeShareState(str) {
+  if (!str) return null;
+  try {
+    return JSON.parse(decodeURIComponent(String(str)));
+  } catch (e) {
+    return null;
+  }
+}
+
+function computePolygonRefFromCoords(coords) {
+  if (!coords || !coords.length) return null;
+  var ring = coords[0] || [];
+  if (!ring.length) return null;
+
+  var minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
+  var sumLon = 0, sumLat = 0, n = 0;
+
+  for (var i = 0; i < ring.length; i++) {
+    var pt = ring[i] || [];
+    var lon = Number(pt[0]);
+    var lat = Number(pt[1]);
+    if (!isFinite(lon) || !isFinite(lat)) continue;
+    minLon = Math.min(minLon, lon); maxLon = Math.max(maxLon, lon);
+    minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat);
+    sumLon += lon; sumLat += lat; n++;
+  }
+
+  if (n === 0) return null;
+  return {
+    centroid: [sumLon / n, sumLat / n],
+    extent: [minLon, minLat, maxLon, maxLat]
+  };
+}
+
+function getPolygonCoordsFromDrawingLayer() {
+  if (drawingTools.layers().length() === 0) return null;
+  var gl = drawingTools.layers().get(0);
+  var geoms = gl.geometries();
+  if (geoms.length() === 0) return null;
+  var g = geoms.get(0);
+  if (!g || !g.coordinates) return null;
+  var coords = g.coordinates();
+  return coords ? coords.getInfo() : null;
+}
+
+function setPolygonFromCoords(coords) {
+  if (!coords || !coords.length) return false;
+  try {
+    var poly = ee.Geometry.Polygon(coords);
+    state.aoiPolygon = poly;
+    var gl = getDrawingLayer();
+    gl.geometries().reset([poly]);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function collectShareState() {
+  var share = {
+    v: 1,
+    aoi: {mode: aoiModeSelect.getValue()},
+    date: {mode: dateModeSelect.getValue()},
+    products: {
+      s2Level: s2LevelSelect.getValue(),
+      landsatLevel: landsatLevelSelect.getValue(),
+      s1Mode: s1ModeSelect.getValue(),
+      s2Composite: s2CompositeSelect.getValue(),
+      lsComposite: lsCompositeSelect.getValue(),
+      s1Viz: s1VizSelect.getValue(),
+      cloudRemoval: cloudRemovalCheckbox.getValue(),
+      keepPreviousViz: keepPreviousVizCheckbox.getValue()
+    }
+  };
+
+  if (share.aoi.mode === 'Point' && state.poiLonLat) {
+    share.aoi.poi = [state.poiLonLat[0], state.poiLonLat[1]];
+    share.aoi.bufferKm = bufferSlider.getValue();
+  }
+
+  if (share.aoi.mode === 'Polygon') {
+    var polyCoords = getPolygonCoordsFromDrawingLayer();
+    if (polyCoords) {
+      share.aoi.polygon = {coords: polyCoords, ref: computePolygonRefFromCoords(polyCoords)};
+    }
+  }
+
+  if (share.date.mode === 'Tailored start/end') {
+    share.date.start = String(startDateBox.getValue() || '').trim();
+    share.date.end = String(endDateBox.getValue() || '').trim();
+  } else {
+    share.date.lookbackDays = lookbackSlider.getValue();
+  }
+
+  return share;
+}
+
+function buildShareUrl() {
+  var encoded = encodeShareState(collectShareState());
+  if (!encoded) return null;
+  ui.url.set('st', encoded);
+  if (typeof window !== 'undefined' && window.location && window.location.href) return String(window.location.href);
+  return String(encoded);
+}
+
+function hydrateFromUrlParams() {
+  var raw = ui.url.get('st');
+  if (!raw) return;
+
+  var parsed = decodeShareState(raw);
+  if (!parsed || typeof parsed !== 'object') {
+    statusLabel.setValue('⚠️ Malformed share link settings. Using defaults.');
+    return;
+  }
+
+  var aoi = parsed.aoi || {};
+  var date = parsed.date || {};
+  var products = parsed.products || {};
+
+  var mode = (aoi.mode === 'Polygon') ? 'Polygon' : 'Point';
+  aoiModeSelect.setValue(mode, true);
+
+  if (mode === 'Point' && aoi.poi && aoi.poi.length === 2) {
+    var lon = clampNum(aoi.poi[0], -180, 180, null);
+    var lat = clampNum(aoi.poi[1], -90, 90, null);
+    if (lon != null && lat != null) setPOI(lon, lat);
+    var buffer = clampNum(aoi.bufferKm, 0.5, 50, DEFAULTS.bufferKm);
+    bufferSlider.setValue(buffer, true);
+    if (state.poi) drawBuffer();
+  }
+
+  if (mode === 'Polygon' && aoi.polygon && aoi.polygon.coords) {
+    if (!setPolygonFromCoords(aoi.polygon.coords)) {
+      statusLabel.setValue('⚠️ Malformed polygon in share link. Using defaults.');
+      aoiModeSelect.setValue('Point', true);
+    }
+  }
+
+  var dMode = (date.mode === 'Tailored start/end') ? 'Tailored start/end' : 'Current date (lookback)';
+  dateModeSelect.setValue(dMode, true);
+  if (dMode === 'Tailored start/end') {
+    if (isIsoDate(date.start)) startDateBox.setValue(date.start, true);
+    if (isIsoDate(date.end)) endDateBox.setValue(date.end, true);
+  } else {
+    lookbackSlider.setValue(clampNum(date.lookbackDays, 7, 365, DEFAULTS.lookbackDays), true);
+  }
+
+  s2LevelSelect.setValue(listHas(['L1C (TOA)', 'L2A (SR)'], products.s2Level) ? products.s2Level : DEFAULTS.s2Level, true);
+  landsatLevelSelect.setValue(listHas(['TOA', 'L2 (SR)'], products.landsatLevel) ? products.landsatLevel : DEFAULTS.landsatLevel, true);
+  s1ModeSelect.setValue(listHas(['ANY', 'IW', 'EW', 'SM', 'WV'], products.s1Mode) ? products.s1Mode : DEFAULTS.s1ModeFilter, true);
+
+  s2CompositeSelect.setValue(listHas(S2_COMPOSITES.map(function(c){ return c.name; }), products.s2Composite) ? products.s2Composite : S2_COMPOSITES[0].name, true);
+  lsCompositeSelect.setValue(listHas(LS_COMPOSITES.map(function(c){ return c.name; }), products.lsComposite) ? products.lsComposite : LS_COMPOSITES[0].name, true);
+  s1VizSelect.setValue(listHas(S1_VIZ.map(function(v){ return v.name; }), products.s1Viz) ? products.s1Viz : S1_VIZ[0].name, true);
+
+  cloudRemovalCheckbox.setValue(products.cloudRemoval === true, true);
+  keepPreviousVizCheckbox.setValue(products.keepPreviousViz === true, true);
+
+  statusLabel.setValue('Share link settings loaded. Review and run query.');
+}
 
 function smallLabel(txt) {
   return ui.Label(txt, {fontSize: '12px', color: '#555', whiteSpace: 'pre', margin: '0 0 6px 0'});
@@ -577,6 +755,25 @@ var queryBtn = ui.Button({
     runQuery();
   }
 });
+
+var copyShareLinkBtn = ui.Button({
+  label: 'Copy Share Link',
+  style: {stretch: 'horizontal'},
+  onClick: function() {
+    var shareUrl = buildShareUrl();
+    if (!shareUrl) return statusLabel.setValue('⚠️ Could not build share link.');
+
+    var copied = false;
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(String(shareUrl));
+        copied = true;
+      }
+    } catch (e) { copied = false; }
+
+    statusLabel.setValue(copied ? '✅ Share link copied to clipboard.' : 'Share link ready in URL bar. Copy it from there.');
+  }
+});
 var clearBtn = ui.Button({
   label: 'Start over (clear everything)',
   style: {stretch: 'horizontal'},
@@ -797,6 +994,7 @@ settingsPanel.add(poiInfo);
 settingsPanel.add(changePoiBtn);
 settingsPanel.add(zoomPoiBtn);
 settingsPanel.add(queryBtn);
+settingsPanel.add(copyShareLinkBtn);
 settingsPanel.add(clearBtn);
 
 settingsPanel.add(smallLabel('\nQuery settings'));
@@ -927,6 +1125,7 @@ function setPOI(lon, lat) {
   if (state.bufferLayer) map.layers().remove(state.bufferLayer);
 
   state.poi = ee.Geometry.Point([lon, lat]);
+  state.poiLonLat = [Number(lon), Number(lat)];
   poiInfo.setValue('POI: ' + lon.toFixed(6) + ', ' + lat.toFixed(6));
 
   state.poiLayer = ui.Map.Layer(state.poi, {color: 'yellow'}, 'POI', true);
@@ -1717,6 +1916,7 @@ function clearAll() {
   if (state.bufferLayer) map.layers().remove(state.bufferLayer);
 
   state.poi = null;
+  state.poiLonLat = null;
   state.poiLayer = null;
   state.bufferLayer = null;
   state.aoiPolygon = null;
@@ -1752,6 +1952,7 @@ function setPOI(lon, lat) {
   if (state.bufferLayer) map.layers().remove(state.bufferLayer);
 
   state.poi = ee.Geometry.Point([lon, lat]);
+  state.poiLonLat = [Number(lon), Number(lat)];
   poiInfo.setValue('POI: ' + lon.toFixed(6) + ', ' + lat.toFixed(6));
 
   state.poiLayer = ui.Map.Layer(state.poi, {color: 'yellow'}, 'POI', true);
@@ -1781,5 +1982,6 @@ s1VizSelect.onChange(function(){ if(state.queryDone){ updateActiveLayersByGroup(
 // -------------------------
 // Init map
 // -------------------------
-map.setCenter(0, 0, 2);
-statusLabel.setValue('Click the map to set the POI (first time).');
+hydrateFromUrlParams();
+if (!state.poi && !state.aoiPolygon) map.setCenter(0, 0, 2);
+if (!state.poi && !state.aoiPolygon) statusLabel.setValue('Click the map to set the POI (first time).');
