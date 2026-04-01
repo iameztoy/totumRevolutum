@@ -702,6 +702,10 @@ var clearS1ReducerBtn = ui.Button({
   onClick: function() { clearS1ReducerLayer(); }
 });
 
+function setWidgetDisabled(widget, disabled) {
+  if (widget && widget.setDisabled) widget.setDisabled(disabled);
+}
+
 function setDisplayControlsEnabled(isEnabled) {
   cloudRemovalCheckbox.setDisabled(!isEnabled);
   s2CompositeSelect.setDisabled(!isEnabled);
@@ -711,14 +715,14 @@ function setDisplayControlsEnabled(isEnabled) {
   s1ReducerSelect.setDisabled(!isEnabled);
   runS1ReducerBtn.setDisabled(!isEnabled);
   clearS1ReducerBtn.setDisabled(!isEnabled);
-  exportSourceSelect.setDisabled(!isEnabled);
-  exportTargetSelect.setDisabled(!isEnabled);
-  exportFormatSelect.setDisabled(!isEnabled);
-  exportScaleBox.setDisabled(!isEnabled);
-  exportMaxPixelsBox.setDisabled(!isEnabled);
-  exportLargeCheckbox.setDisabled(!isEnabled);
-  exportDescriptionBox.setDisabled(!isEnabled);
-  runExportBtn.setDisabled(!isEnabled);
+  setWidgetDisabled(exportSourceSelect, !isEnabled);
+  setWidgetDisabled(exportTargetSelect, !isEnabled);
+  setWidgetDisabled(exportFormatSelect, !isEnabled);
+  setWidgetDisabled(exportScaleBox, !isEnabled);
+  setWidgetDisabled(exportMaxPixelsBox, !isEnabled);
+  setWidgetDisabled(exportLargeCheckbox, !isEnabled);
+  setWidgetDisabled(exportDescriptionBox, !isEnabled);
+  setWidgetDisabled(runExportBtn, !isEnabled);
 }
 setDisplayControlsEnabled(false);
 
