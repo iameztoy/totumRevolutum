@@ -34,7 +34,7 @@ var PAGE_SIZE = 10;
 // -------------------------
 var uiState = {
   panelOpen: true,
-  view: 'Settings' // 'Settings' | 'Results' | 'Water Detection'
+  view: 'Settings' // 'Settings' | 'Results' | 'Water Detection' | 'Export'
 };
 
 // -------------------------
@@ -109,6 +109,7 @@ var state = {
   waterLayer: null,
   waterEntries: [],
   s1ReducerLayer: null,
+  exportDownloadUrl: null,
 
   // Lists
   // S2/LS: items are {date, ids[], cloudMean, tileCount}
@@ -702,6 +703,10 @@ var clearS1ReducerBtn = ui.Button({
   onClick: function() { clearS1ReducerLayer(); }
 });
 
+function setWidgetDisabled(widget, disabled) {
+  if (widget && widget.setDisabled) widget.setDisabled(disabled);
+}
+
 function setDisplayControlsEnabled(isEnabled) {
   cloudRemovalCheckbox.setDisabled(!isEnabled);
   s2CompositeSelect.setDisabled(!isEnabled);
@@ -711,6 +716,14 @@ function setDisplayControlsEnabled(isEnabled) {
   s1ReducerSelect.setDisabled(!isEnabled);
   runS1ReducerBtn.setDisabled(!isEnabled);
   clearS1ReducerBtn.setDisabled(!isEnabled);
+  setWidgetDisabled(exportSourceSelect, !isEnabled);
+  setWidgetDisabled(exportTargetSelect, !isEnabled);
+  setWidgetDisabled(exportFormatSelect, !isEnabled);
+  setWidgetDisabled(exportScaleBox, !isEnabled);
+  setWidgetDisabled(exportMaxPixelsBox, !isEnabled);
+  setWidgetDisabled(exportLargeCheckbox, !isEnabled);
+  setWidgetDisabled(exportDescriptionBox, !isEnabled);
+  setWidgetDisabled(runExportBtn, !isEnabled);
 }
 setDisplayControlsEnabled(false);
 
@@ -744,6 +757,220 @@ waterMethodSelect.onChange(function(m) {
   else waterThresholdBox.setValue('0.0');
 });
 
+// Export controls
+var exportSourceSelect = ui.Select({
+  items: ['Top visible result layer', 'Visible result layers mosaic'],
+  value: 'Top visible result layer',
+  style: {stretch: 'horizontal'}
+});
+var exportTargetSelect = ui.Select({
+  items: ['In-app download link', 'Google Drive task'],
+  value: 'In-app download link',
+  style: {stretch: 'horizontal'}
+});
+var exportFormatSelect = ui.Select({
+  items: ['GeoTIFF', 'Cloud Optimized GeoTIFF', 'PNG quicklook', 'JPG quicklook'],
+  value: 'GeoTIFF',
+  style: {stretch: 'horizontal'}
+});
+var exportScaleBox = ui.Textbox({placeholder: 'Scale (m)', value: '', style: {stretch: 'horizontal'}});
+var exportMaxPixelsBox = ui.Textbox({placeholder: 'Max pixels', value: '1e13', style: {stretch: 'horizontal'}});
+var exportLargeCheckbox = ui.Checkbox({label: 'Allow large exports (> 2e8 px estimate)', value: false});
+var exportDescriptionBox = ui.Textbox({placeholder: 'Export name', value: 'LanSenView_export', style: {stretch: 'horizontal'}});
+var exportStatusLabel = ui.Label('Select a visible image layer and run export.', {fontSize: '12px', color: '#555'});
+var exportLinkLabel = ui.Label('', {fontSize: '12px', color: '#1a73e8', shown: false});
+var runExportBtn = ui.Button({
+  label: 'Run export',
+  style: {stretch: 'horizontal', fontWeight: 'bold'},
+  onClick: function() { runExport(); }
+});
+
+function getVisibleResultLayerEntries() {
+  var entries = [];
+  var layers = map.layers();
+  for (var i = 0; i < layers.length(); i++) {
+    var lyr = layers.get(i);
+    var key = null;
+    Object.keys(state.resultsLayers).forEach(function(k) { if (state.resultsLayers[k] === lyr) key = k; });
+    if (!key) continue;
+    var shown = (lyr.getShown) ? lyr.getShown() : true;
+    if (!shown) continue;
+    var meta = state.layerMeta[key];
+    if (!meta) continue;
+    entries.push({index: i, key: key, layer: lyr, meta: meta});
+  }
+  entries.sort(function(a,b){ return a.index - b.index; });
+  return entries;
+}
+
+function getMapViewRegion() {
+  function makeRegionFromBoundsArray(boundsArr) {
+    if (!boundsArr || boundsArr.length < 4) return null;
+    var west = Number(boundsArr[0]);
+    var south = Number(boundsArr[1]);
+    var east = Number(boundsArr[2]);
+    var north = Number(boundsArr[3]);
+
+    if (isNaN(west) || isNaN(south) || isNaN(east) || isNaN(north)) return null;
+    if (north <= south) return null;
+
+    // If viewport crosses antimeridian, split into two valid rectangles.
+    if (east < west) {
+      return ee.Geometry.MultiPolygon([
+        [[[west, south], [180, south], [180, north], [west, north], [west, south]]],
+        [[[-180, south], [east, south], [east, north], [-180, north], [-180, south]]]
+      ], null, true);
+    }
+
+    return ee.Geometry.Rectangle([west, south, east, north], null, true);
+  }
+
+  var b = map.getBounds(true);
+
+  if (Array.isArray(b)) {
+    return makeRegionFromBoundsArray(b);
+  }
+
+  if (typeof b === 'string') {
+    var parts = b.split(',').map(function(v) { return Number(String(v).trim()); });
+    return makeRegionFromBoundsArray(parts);
+  }
+
+  if (b && b.type && b.coordinates) {
+    return ee.Geometry(b, null, true);
+  }
+
+  var bFallback = map.getBounds();
+  if (Array.isArray(bFallback)) return makeRegionFromBoundsArray(bFallback);
+  if (typeof bFallback === 'string') {
+    var partsFallback = bFallback.split(',').map(function(v) { return Number(String(v).trim()); });
+    return makeRegionFromBoundsArray(partsFallback);
+  }
+
+  return null;
+}
+
+function buildExportImageFromSelection() {
+  var entries = getVisibleResultLayerEntries();
+  if (!entries.length) return {error: 'No visible result layers. Tick at least one result first.'};
+
+  var sourceMode = exportSourceSelect.getValue();
+  if (sourceMode === 'Top visible result layer') {
+    var top = entries[entries.length - 1];
+    var imgTop = makeDisplayImage(top.meta.sensorKey, top.meta.ids, top.meta);
+    return {image: ee.Image(imgTop), count: 1, sensor: top.meta.sensorKey, label: top.meta.labelBase, vis: getVisForSensor(top.meta.sensorKey)};
+  }
+
+  var images = entries.map(function(e) { return makeDisplayImage(e.meta.sensorKey, e.meta.ids, e.meta); });
+  var mos = ee.ImageCollection.fromImages(images).mosaic();
+  return {image: mos, count: entries.length, sensor: 'MIXED', label: 'Visible layers mosaic', vis: opticalVisParams()};
+}
+
+function getSelectedExportScale(img) {
+  var val = String(exportScaleBox.getValue() || '').trim();
+  if (val !== '') {
+    var parsed = Number(val);
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return img.projection().nominalScale();
+}
+
+function estimatePixelCount(region, scale, cb) {
+  ee.Number(region.area(1).divide(ee.Number(scale).multiply(scale))).evaluate(function(v) { cb(Number(v || 0)); });
+}
+
+function runExport() {
+  exportLinkLabel.style().set('shown', false);
+  exportLinkLabel.setValue('');
+  state.exportDownloadUrl = null;
+
+  var sel = buildExportImageFromSelection();
+  if (sel.error) {
+    exportStatusLabel.setValue('⚠️ ' + sel.error);
+    return;
+  }
+
+  var region = getMapViewRegion();
+  if (!region) {
+    exportStatusLabel.setValue('⚠️ Invalid map extent. Move/zoom map and try again.');
+    return;
+  }
+  var img = ee.Image(sel.image);
+  var scale = getSelectedExportScale(img);
+  var maxPixels = Number(String(exportMaxPixelsBox.getValue() || '1e13'));
+  if (isNaN(maxPixels) || maxPixels <= 0) {
+    exportStatusLabel.setValue('⚠️ Max pixels must be numeric and > 0.');
+    return;
+  }
+
+  exportStatusLabel.setValue('⏳ Preparing export (' + sel.count + ' layer(s))...');
+  estimatePixelCount(region, scale, function(px) {
+    if (px > 2e8 && !exportLargeCheckbox.getValue()) {
+      exportStatusLabel.setValue('⚠️ Large export (~' + Math.round(px / 1e6) + 'M px). Tick "Allow large exports" or use a larger scale.');
+      return;
+    }
+
+    var desc = String(exportDescriptionBox.getValue() || 'LanSenView_export').trim() || 'LanSenView_export';
+    var fmt = exportFormatSelect.getValue();
+    var cloudOptimized = (fmt === 'Cloud Optimized GeoTIFF');
+    var isQuicklook = (fmt === 'PNG quicklook' || fmt === 'JPG quicklook');
+
+    if (isQuicklook && exportTargetSelect.getValue() === 'Google Drive task') {
+      exportStatusLabel.setValue('⚠️ PNG/JPG quicklooks are available for in-app download link target only.');
+      return;
+    }
+
+    if (exportTargetSelect.getValue() === 'Google Drive task') {
+      Export.image.toDrive({
+        image: img,
+        description: desc,
+        fileNamePrefix: desc,
+        region: region,
+        scale: scale,
+        maxPixels: maxPixels,
+        fileFormat: 'GeoTIFF',
+        formatOptions: cloudOptimized ? {cloudOptimized: true} : null
+      });
+      exportStatusLabel.setValue('✅ Drive export task created. Open the Tasks tab to Run/Cancel it.');
+      return;
+    }
+
+    if (isQuicklook) {
+      var quickFmt = (fmt === 'PNG quicklook') ? 'png' : 'jpg';
+      var vis = sel.vis || opticalVisParams();
+      var rendered = img.visualize(vis);
+      var thumbParams = {
+        region: region,
+        scale: scale,
+        format: quickFmt,
+        maxPixels: maxPixels
+      };
+      var quicklookUrl = rendered.getThumbURL(thumbParams);
+      state.exportDownloadUrl = quicklookUrl;
+      exportLinkLabel.setValue('Quicklook ready: ' + quicklookUrl);
+      exportLinkLabel.style().set('shown', true);
+      exportStatusLabel.setValue('✅ ' + fmt + ' quicklook link generated for current view.');
+      return;
+    }
+
+    var params = {
+      name: desc,
+      region: region,
+      scale: scale,
+      maxPixels: maxPixels,
+      format: 'GEO_TIFF'
+    };
+    if (cloudOptimized) params.formatOptions = {cloudOptimized: true};
+
+    img.getDownloadURL(params, function(url) {
+      state.exportDownloadUrl = url;
+      exportLinkLabel.setValue('Download ready: ' + url);
+      exportLinkLabel.style().set('shown', true);
+      exportStatusLabel.setValue('✅ Download link generated for current map extent.');
+    });
+  });
+}
+
 // Counts + result panels
 var s2CountLabel = ui.Label('S2: 0', {fontSize: '12px', color: '#555'});
 var lsCountLabel = ui.Label('Landsat: 0', {fontSize: '12px', color: '#555'});
@@ -767,12 +994,14 @@ s1ResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'
 var settingsPanel = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
 var resultsPanel  = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
 var waterPanel = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
+var exportPanel = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
 
 function setView(viewName) {
   uiState.view = viewName;
   settingsPanel.style().set('shown', viewName === 'Settings');
   resultsPanel.style().set('shown', viewName === 'Results');
   waterPanel.style().set('shown', viewName === 'Water Detection');
+  exportPanel.style().set('shown', viewName === 'Export');
 }
 
 // View buttons
@@ -780,6 +1009,7 @@ var viewBar = ui.Panel({layout: ui.Panel.Layout.flow('horizontal'), style: {marg
 viewBar.add(ui.Button({label:'Settings', style:{margin:'0 4px 0 0'}, onClick:function(){ setView('Settings'); }}));
 viewBar.add(ui.Button({label:'Results',  style:{margin:'0 4px 0 0'}, onClick:function(){ setView('Results'); }}));
 viewBar.add(ui.Button({label:'Water Detection', style:{margin:'0 4px 0 0'}, onClick:function(){ setView('Water Detection'); }}));
+viewBar.add(ui.Button({label:'Export', style:{margin:'0 4px 0 0'}, onClick:function(){ setView('Export'); }}));
 
 // Fill settings panel once
 settingsPanel.add(smallLabel(
@@ -857,6 +1087,28 @@ waterPanel.add(smallLabel('Defaults: optical=0.0; SAR co-pol=-17 dB; SAR cross-p
 waterPanel.add(smallLabel('Output: blue water mask over selected source image.'));
 waterPanel.add(waterStatusLabel);
 
+exportPanel.add(ui.Label('Export', {fontWeight:'bold', margin:'0 0 4px 0'}));
+exportPanel.add(smallLabel('Extent: current map view bounds'));
+exportPanel.add(smallLabel('Source image selection'));
+exportPanel.add(exportSourceSelect);
+exportPanel.add(smallLabel('Target'));
+exportPanel.add(exportTargetSelect);
+exportPanel.add(smallLabel('Format'));
+exportPanel.add(exportFormatSelect);
+exportPanel.add(smallLabel('Scale (meters; empty = native highest nominal)'));
+exportPanel.add(exportScaleBox);
+exportPanel.add(smallLabel('Max pixels'));
+exportPanel.add(exportMaxPixelsBox);
+exportPanel.add(exportLargeCheckbox);
+exportPanel.add(smallLabel('Export name'));
+exportPanel.add(exportDescriptionBox);
+exportPanel.add(runExportBtn);
+exportPanel.add(smallLabel('Tip: If multiple layers are visible, choose Top visible layer to avoid conflicts.'));
+exportPanel.add(smallLabel('Drive exports can be canceled from GEE Tasks tab.'));
+exportPanel.add(smallLabel('PNG/JPG quicklooks are rendered images (not analysis-grade GeoTIFF).'));
+exportPanel.add(exportStatusLabel);
+exportPanel.add(exportLinkLabel);
+
 // Start view
 setView('Settings');
 
@@ -877,6 +1129,7 @@ sidePanel.add(viewBar);
 sidePanel.add(settingsPanel);
 sidePanel.add(resultsPanel);
 sidePanel.add(waterPanel);
+sidePanel.add(exportPanel);
 
 panelWidthSlider.onChange(function(v) {
   sidePanel.style().set('width', Number(v).toFixed(0) + 'px');
@@ -1709,6 +1962,10 @@ function clearResultsOnly() {
 
   clearWaterMask();
   updateWaterSourceOptions();
+  exportLinkLabel.setValue('');
+  exportLinkLabel.style().set('shown', false);
+  exportStatusLabel.setValue('Select a visible image layer and run export.');
+  state.exportDownloadUrl = null;
 }
 
 function clearAll() {
