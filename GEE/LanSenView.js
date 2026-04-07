@@ -10,6 +10,7 @@
  * FEATURES:
  * - Group Sentinel-2 & Landsat results by DATE and load mosaics per date
  * - Sentinel-1 per-scene
+ * Iban Ameztoy 2026
  ****************************************/
 
 // -------------------------
