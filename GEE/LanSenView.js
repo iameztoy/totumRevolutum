@@ -986,7 +986,7 @@ var hotspotMethodSelect = ui.Select({
   value: 'SWIR2 threshold',
   style: {stretch: 'horizontal'}
 });
-var hotspotSwirThresholdBox = ui.Textbox({placeholder: 'SWIR2 threshold', value: '0.40', style: {stretch: 'horizontal'}});
+var hotspotSwirThresholdBox = ui.Textbox({placeholder: 'SWIR2 threshold', value: '0.55', style: {stretch: 'horizontal'}});
 var hotspotRedThresholdBox = ui.Textbox({placeholder: 'Red threshold', value: '0.07', style: {stretch: 'horizontal'}});
 var keepHotspotCheckbox = ui.Checkbox({label: 'Keep previous hotspot results', value: false});
 var hotspotStatusLabel = ui.Label('Select image/date and run hotspot detection.', {fontSize: '12px', color: '#555'});
@@ -1053,7 +1053,7 @@ function getSelectedHotspotEntry() {
 function refreshHotspotDefaults() {
   // Literature-inspired default thresholds from AFD-S2/GOLI family criteria:
   // high SWIR2 and low Red. Keep configurable by user.
-  hotspotSwirThresholdBox.setValue('0.40');
+  hotspotSwirThresholdBox.setValue('0.55');
   hotspotRedThresholdBox.setValue('0.07');
 }
 
@@ -1261,7 +1261,7 @@ hotspotPanel.add(smallLabel('Select one queried Sentinel-2 or Landsat date'));
 hotspotPanel.add(hotspotSourceSelect);
 hotspotPanel.add(smallLabel('Method'));
 hotspotPanel.add(hotspotMethodSelect);
-hotspotPanel.add(smallLabel('SWIR2 threshold (default 0.40 reflectance)'));
+hotspotPanel.add(smallLabel('SWIR2 threshold (default 0.55 reflectance)'));
 hotspotPanel.add(hotspotSwirThresholdBox);
 hotspotPanel.add(smallLabel('Red threshold (AFD-inspired default 0.07)'));
 hotspotPanel.add(hotspotRedThresholdBox);
