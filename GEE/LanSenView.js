@@ -1213,6 +1213,7 @@ function handleInspectorClick(coords) {
     if (!dict || Object.keys(dict).length === 0) {
       inspectorStatusLabel.setValue('No data at clicked pixel for this date/image.');
       inspectorInfoLabel.setValue('Band values: (none)');
+      inspectorDock.style().set('shown', false);
       return;
     }
 
@@ -1221,7 +1222,7 @@ function handleInspectorClick(coords) {
     inspectorInfoLabel.setValue('Bands: ' + keys.join(', '));
 
     var chart = ui.Chart.array.values(values, 0, keys)
-      .setChartType('ColumnChart')
+      .setChartType('LineChart')
       .setOptions({
         title: 'Pixel band values',
         legend: {position: 'none'},
@@ -1229,6 +1230,7 @@ function handleInspectorClick(coords) {
         vAxis: {title: 'Value'}
       });
     inspectorChartPanel.add(chart);
+    inspectorDock.style().set('shown', true);
     inspectorStatusLabel.setValue('✅ Pixel sampled.');
   });
 }
@@ -1311,17 +1313,17 @@ settingsPanel.add(smallLabel('\nProducts / filters'));
 settingsPanel.add(smallLabel('Sentinel-2 product')); settingsPanel.add(s2LevelSelect);
 settingsPanel.add(smallLabel('Landsat product')); settingsPanel.add(landsatLevelSelect);
 settingsPanel.add(smallLabel('Sentinel-1 mode filter')); settingsPanel.add(s1ModeSelect);
-settingsPanel.add(smallLabel('\nDisplay controls (no re-query)'));
-settingsPanel.add(cloudRemovalCheckbox);
-settingsPanel.add(smallLabel('Sentinel-2 composite')); settingsPanel.add(s2CompositeSelect);
-settingsPanel.add(smallLabel('Landsat composite')); settingsPanel.add(lsCompositeSelect);
-settingsPanel.add(smallLabel('Sentinel-1 visualization')); settingsPanel.add(s1VizSelect);
-settingsPanel.add(keepPreviousVizCheckbox);
 
 // Fill results panel once
 resultsPanel.add(ui.Label('Display & panel controls', {fontWeight:'bold', margin:'0 0 4px 0'}));
 resultsPanel.add(smallLabel('Panel width (px)'));
 resultsPanel.add(panelWidthSlider);
+resultsPanel.add(ui.Label('Display controls (no re-query)', {fontWeight:'bold', margin:'6px 0 4px 0'}));
+resultsPanel.add(cloudRemovalCheckbox);
+resultsPanel.add(smallLabel('Sentinel-2 composite')); resultsPanel.add(s2CompositeSelect);
+resultsPanel.add(smallLabel('Landsat composite')); resultsPanel.add(lsCompositeSelect);
+resultsPanel.add(smallLabel('Sentinel-1 visualization')); resultsPanel.add(s1VizSelect);
+resultsPanel.add(keepPreviousVizCheckbox);
 
 resultsPanel.add(ui.Label('Sentinel-2 (grouped by date; mosaics)', {fontWeight:'bold', margin:'10px 0 2px 0'}));
 resultsPanel.add(s2CountLabel);
@@ -1455,7 +1457,7 @@ var inspectorDock = ui.Panel({
 });
 inspectorDock.add(ui.Label('Inspector chart', {fontWeight: 'bold', margin: '0 0 4px 0'}));
 inspectorDock.add(inspectorChartPanel);
-inspectorDock.style().set('shown', true);
+inspectorDock.style().set('shown', false);
 
 // initial show state
 sidePanel.style().set('shown', uiState.panelOpen);
@@ -2278,6 +2280,7 @@ function clearResultsOnly() {
   inspectorChartPanel.clear();
   inspectorCoordLabel.setValue('Pixel: (none)');
   inspectorInfoLabel.setValue('Band values: (none)');
+  inspectorDock.style().set('shown', false);
   clearHotspotLayers();
   exportLinkLabel.setValue('');
   exportLinkLabel.style().set('shown', false);
