@@ -111,6 +111,8 @@ var state = {
   exportDownloadUrl: null,
   hotspotEntries: [],
   hotspotLayers: [],
+  inspectorEntries: [],
+  inspectorClickLayer: null,
 
   // Lists
   // S2/LS: items are {date, ids[], cloudMean, tileCount}
@@ -732,6 +734,7 @@ function setDisplayControlsEnabled(isEnabled) {
   setWidgetDisabled(keepHotspotCheckbox, !isEnabled);
   setWidgetDisabled(runHotspotBtn, !isEnabled);
   setWidgetDisabled(clearHotspotBtn, !isEnabled);
+  setWidgetDisabled(inspectorSourceSelect, !isEnabled);
 }
 setDisplayControlsEnabled(false);
 
@@ -1115,6 +1118,121 @@ function runHotspotDetection() {
   hotspotStatusLabel.setValue('Hotspot layer added.');
 }
 
+// Inspector controls
+var inspectorSourceSelect = ui.Select({items: ['(run query first)'], value: '(run query first)', style: {stretch: 'horizontal'}});
+var inspectorStatusLabel = ui.Label('Select image/date and click map to inspect pixel values.', {fontSize: '12px', color: '#555'});
+var inspectorCoordLabel = ui.Label('Pixel: (none)', {fontSize: '12px', color: '#555'});
+var inspectorInfoLabel = ui.Label('Band values: (none)', {fontSize: '12px', color: '#555'});
+var inspectorChartPanel = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
+
+function getInspectorSelectionEntries() {
+  var entries = [];
+  state.lists.S2.items.forEach(function(item) {
+    entries.push({label: 'S2 | ' + item.date + ' | ' + item.tileCount + ' tiles', sensorKey: state.lists.S2.sensorKey, ids: item.ids, meta: {s1: null}});
+  });
+  state.lists.LS.items.forEach(function(item) {
+    entries.push({label: 'Landsat | ' + item.date + ' | ' + item.tileCount + ' scenes', sensorKey: state.lists.LS.sensorKey, ids: item.ids, meta: {s1: null}});
+  });
+  state.lists.S1.items.forEach(function(item) {
+    entries.push({label: 'S1 | ' + item.date + ' | ' + item.tileCount + ' scenes', sensorKey: state.lists.S1.sensorKey, ids: item.ids, meta: {s1: {pols: item.pols, mode: item.mode}}});
+  });
+  return entries;
+}
+
+function updateInspectorSourceOptions() {
+  var entries = getInspectorSelectionEntries();
+  state.inspectorEntries = entries;
+
+  if (!entries.length) {
+    inspectorSourceSelect.items().reset(['(run query first)']);
+    inspectorSourceSelect.setValue('(run query first)', true);
+    inspectorStatusLabel.setValue('No queried images yet. Run Query imagery first.');
+    return;
+  }
+  var labels = entries.map(function(e){ return e.label; });
+  inspectorSourceSelect.items().reset(labels);
+  inspectorSourceSelect.setValue(labels[0], true);
+}
+
+function getSelectedInspectorEntry() {
+  var label = inspectorSourceSelect.getValue();
+  if (!label || !state.inspectorEntries) return null;
+  for (var i = 0; i < state.inspectorEntries.length; i++) {
+    if (state.inspectorEntries[i].label === label) return state.inspectorEntries[i];
+  }
+  return null;
+}
+
+function getInspectorImage(entry) {
+  if (!entry) return null;
+  var ids = Array.isArray(entry.ids) ? entry.ids : [entry.ids];
+
+  if (entry.sensorKey === 'S2_L1C' || entry.sensorKey === 'S2_L2A') {
+    var s2 = ee.ImageCollection.fromImages(ids.map(function(id){ return ee.Image(id); })).mosaic().multiply(0.0001);
+    return s2.select(['B2','B3','B4','B8','B11','B12'], ['BLUE','GREEN','RED','NIR','SWIR1','SWIR2']);
+  }
+  if (entry.sensorKey === 'Landsat_TOA' || entry.sensorKey === 'Landsat_L2SR') {
+    var ls = ee.ImageCollection.fromImages(ids.map(function(id){ return ee.Image(id); })).mosaic();
+    return landsatToCommonBands(ls, entry.sensorKey);
+  }
+  if (entry.sensorKey === 'S1') {
+    var s1 = ee.ImageCollection.fromImages(ids.map(function(id){ return ee.Image(id); })).mosaic();
+    var bands = ee.List(['VV','VH','HH','HV']).filter(ee.Filter.inList('item', s1.bandNames()));
+    return s1.select(bands);
+  }
+  return null;
+}
+
+function clearInspectorMarker() {
+  if (!state.inspectorClickLayer) return;
+  map.layers().remove(state.inspectorClickLayer);
+  state.inspectorClickLayer = null;
+}
+
+function handleInspectorClick(coords) {
+  if (uiState.view !== 'Inspector') return;
+  var entry = getSelectedInspectorEntry();
+  if (!entry) return inspectorStatusLabel.setValue('Select an image/date in Inspector first.');
+
+  clearInspectorMarker();
+  var pt = ee.Geometry.Point([coords.lon, coords.lat]);
+  state.inspectorClickLayer = ui.Map.Layer(pt, {color: '#00ffff'}, 'Inspector pixel', true);
+  map.layers().add(state.inspectorClickLayer);
+
+  inspectorCoordLabel.setValue('Pixel: ' + coords.lon.toFixed(6) + ', ' + coords.lat.toFixed(6));
+  inspectorStatusLabel.setValue('⏳ Sampling pixel values...');
+
+  var img = getInspectorImage(entry);
+  if (!img) return inspectorStatusLabel.setValue('No image available for this selection.');
+  var bands = img.bandNames();
+  var scale = img.projection().nominalScale();
+  var sample = img.sample(pt, scale).first();
+
+  ee.Dictionary(ee.Algorithms.If(sample, sample.toDictionary(bands), ee.Dictionary({}))).evaluate(function(dict) {
+    inspectorChartPanel.clear();
+    if (!dict || Object.keys(dict).length === 0) {
+      inspectorStatusLabel.setValue('No data at clicked pixel for this date/image.');
+      inspectorInfoLabel.setValue('Band values: (none)');
+      return;
+    }
+
+    var keys = Object.keys(dict);
+    var values = keys.map(function(k){ return Number(dict[k]); });
+    inspectorInfoLabel.setValue('Bands: ' + keys.join(', '));
+
+    var chart = ui.Chart.array.values(values, 0, keys)
+      .setChartType('ColumnChart')
+      .setOptions({
+        title: 'Pixel band values',
+        legend: {position: 'none'},
+        hAxis: {title: 'Bands'},
+        vAxis: {title: 'Value'}
+      });
+    inspectorChartPanel.add(chart);
+    inspectorStatusLabel.setValue('✅ Pixel sampled.');
+  });
+}
+
 // Counts + result panels
 var s2CountLabel = ui.Label('S2: 0', {fontSize: '12px', color: '#555'});
 var lsCountLabel = ui.Label('Landsat: 0', {fontSize: '12px', color: '#555'});
@@ -1137,6 +1255,7 @@ s1ResultsPanel.add(placeholder('No results yet. Run "Query imagery" (Settings).'
 // -------------------------
 var settingsPanel = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
 var resultsPanel  = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
+var inspectorPanel = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
 var waterPanel = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
 var exportPanel = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
 var hotspotPanel = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
@@ -1145,18 +1264,20 @@ function setView(viewName) {
   uiState.view = viewName;
   settingsPanel.style().set('shown', viewName === 'Settings');
   resultsPanel.style().set('shown', viewName === 'Results');
-  waterPanel.style().set('shown', viewName === 'Water Detection');
+  inspectorPanel.style().set('shown', viewName === 'Inspector');
+  waterPanel.style().set('shown', viewName === 'Water detection');
   exportPanel.style().set('shown', viewName === 'Export');
-  hotspotPanel.style().set('shown', viewName === 'Hotspots');
+  hotspotPanel.style().set('shown', viewName === 'Hotspot detection');
 }
 
 // View buttons
 var viewBar = ui.Panel({layout: ui.Panel.Layout.flow('horizontal'), style: {margin: '0 0 8px 0'}});
 viewBar.add(ui.Button({label:'Settings', style:{margin:'0 4px 0 0'}, onClick:function(){ setView('Settings'); }}));
 viewBar.add(ui.Button({label:'Results',  style:{margin:'0 4px 0 0'}, onClick:function(){ setView('Results'); }}));
-viewBar.add(ui.Button({label:'Water Detection', style:{margin:'0 4px 0 0'}, onClick:function(){ setView('Water Detection'); }}));
+viewBar.add(ui.Button({label:'Inspector', style:{margin:'0 4px 0 0'}, onClick:function(){ setView('Inspector'); }}));
+viewBar.add(ui.Button({label:'Water detection', style:{margin:'0 4px 0 0'}, onClick:function(){ setView('Water detection'); }}));
+viewBar.add(ui.Button({label:'Hotspot detection', style:{margin:'0 4px 0 0'}, onClick:function(){ setView('Hotspot detection'); }}));
 viewBar.add(ui.Button({label:'Export', style:{margin:'0 4px 0 0'}, onClick:function(){ setView('Export'); }}));
-viewBar.add(ui.Button({label:'Hotspots', style:{margin:'0 4px 0 0'}, onClick:function(){ setView('Hotspots'); }}));
 
 // Fill settings panel once
 settingsPanel.add(smallLabel(
@@ -1190,16 +1311,17 @@ settingsPanel.add(smallLabel('\nProducts / filters'));
 settingsPanel.add(smallLabel('Sentinel-2 product')); settingsPanel.add(s2LevelSelect);
 settingsPanel.add(smallLabel('Landsat product')); settingsPanel.add(landsatLevelSelect);
 settingsPanel.add(smallLabel('Sentinel-1 mode filter')); settingsPanel.add(s1ModeSelect);
+settingsPanel.add(smallLabel('\nDisplay controls (no re-query)'));
+settingsPanel.add(cloudRemovalCheckbox);
+settingsPanel.add(smallLabel('Sentinel-2 composite')); settingsPanel.add(s2CompositeSelect);
+settingsPanel.add(smallLabel('Landsat composite')); settingsPanel.add(lsCompositeSelect);
+settingsPanel.add(smallLabel('Sentinel-1 visualization')); settingsPanel.add(s1VizSelect);
+settingsPanel.add(keepPreviousVizCheckbox);
 
 // Fill results panel once
-resultsPanel.add(ui.Label('Display controls (no re-query)', {fontWeight:'bold', margin:'0 0 4px 0'}));
+resultsPanel.add(ui.Label('Display & panel controls', {fontWeight:'bold', margin:'0 0 4px 0'}));
 resultsPanel.add(smallLabel('Panel width (px)'));
 resultsPanel.add(panelWidthSlider);
-resultsPanel.add(cloudRemovalCheckbox);
-resultsPanel.add(smallLabel('Sentinel-2 composite')); resultsPanel.add(s2CompositeSelect);
-resultsPanel.add(smallLabel('Landsat composite')); resultsPanel.add(lsCompositeSelect);
-resultsPanel.add(smallLabel('Sentinel-1 visualization')); resultsPanel.add(s1VizSelect);
-resultsPanel.add(keepPreviousVizCheckbox);
 
 resultsPanel.add(ui.Label('Sentinel-2 (grouped by date; mosaics)', {fontWeight:'bold', margin:'10px 0 2px 0'}));
 resultsPanel.add(s2CountLabel);
@@ -1221,7 +1343,15 @@ resultsPanel.add(s1ReducerSelect);
 resultsPanel.add(runS1ReducerBtn);
 resultsPanel.add(clearS1ReducerBtn);
 
-waterPanel.add(ui.Label('Water Detection', {fontWeight:'bold', margin:'0 0 4px 0'}));
+inspectorPanel.add(ui.Label('Inspector', {fontWeight:'bold', margin:'0 0 4px 0'}));
+inspectorPanel.add(smallLabel('Select one queried image/date'));
+inspectorPanel.add(inspectorSourceSelect);
+inspectorPanel.add(smallLabel('Click the map to sample a pixel and plot band values.'));
+inspectorPanel.add(inspectorStatusLabel);
+inspectorPanel.add(inspectorCoordLabel);
+inspectorPanel.add(inspectorInfoLabel);
+
+waterPanel.add(ui.Label('Water detection', {fontWeight:'bold', margin:'0 0 4px 0'}));
 waterPanel.add(smallLabel('Select one queried image/date'));
 waterPanel.add(waterSourceSelect);
 waterPanel.add(smallLabel('Method'));
@@ -1256,7 +1386,7 @@ exportPanel.add(smallLabel('PNG/JPG quicklooks are rendered images (not analysis
 exportPanel.add(exportStatusLabel);
 exportPanel.add(exportLinkLabel);
 
-hotspotPanel.add(ui.Label('Hotspots (SWIR)', {fontWeight:'bold', margin:'0 0 4px 0'}));
+hotspotPanel.add(ui.Label('Hotspot detection (SWIR)', {fontWeight:'bold', margin:'0 0 4px 0'}));
 hotspotPanel.add(smallLabel('Select one queried Sentinel-2 or Landsat date'));
 hotspotPanel.add(hotspotSourceSelect);
 hotspotPanel.add(smallLabel('Method'));
@@ -1290,6 +1420,7 @@ sidePanel.add(subtitle);
 sidePanel.add(viewBar);
 sidePanel.add(settingsPanel);
 sidePanel.add(resultsPanel);
+sidePanel.add(inspectorPanel);
 sidePanel.add(waterPanel);
 sidePanel.add(exportPanel);
 sidePanel.add(hotspotPanel);
@@ -1313,16 +1444,30 @@ toggleRow.add(panelToggleBtn);
 uiContainer.add(toggleRow);
 uiContainer.add(sidePanel);
 
+var inspectorDock = ui.Panel({
+  style: {
+    position: 'top-right',
+    width: '460px',
+    height: '360px',
+    padding: '8px',
+    backgroundColor: 'rgba(255,255,255,0.95)'
+  }
+});
+inspectorDock.add(ui.Label('Inspector chart', {fontWeight: 'bold', margin: '0 0 4px 0'}));
+inspectorDock.add(inspectorChartPanel);
+inspectorDock.style().set('shown', true);
+
 // initial show state
 sidePanel.style().set('shown', uiState.panelOpen);
 
 // Attach to map.widgets ONCE (no reset later)
-map.widgets().reset([uiContainer]);
+map.widgets().reset([uiContainer, inspectorDock]);
 
 // -------------------------
 // POI behavior
 // -------------------------
 map.onClick(function(coords) {
+  handleInspectorClick(coords);
   if (state.aoiMode !== 'Point') return;
   if (!state.poi) {
     setPOI(coords.lon, coords.lat);
@@ -1650,6 +1795,7 @@ function runQuery() {
       renderResults('S1');
       updateWaterSourceOptions();
       updateHotspotSourceOptions();
+      updateInspectorSourceOptions();
     }
   }
 
@@ -2127,6 +2273,11 @@ function clearResultsOnly() {
   clearWaterMask();
   updateWaterSourceOptions();
   updateHotspotSourceOptions();
+  updateInspectorSourceOptions();
+  clearInspectorMarker();
+  inspectorChartPanel.clear();
+  inspectorCoordLabel.setValue('Pixel: (none)');
+  inspectorInfoLabel.setValue('Band values: (none)');
   clearHotspotLayers();
   exportLinkLabel.setValue('');
   exportLinkLabel.style().set('shown', false);
@@ -2155,6 +2306,7 @@ function clearAll() {
 // POI
 // -------------------------
 map.onClick(function(coords) {
+  handleInspectorClick(coords);
   if (state.aoiMode !== 'Point') return;
   if (!state.poi) {
     setPOI(coords.lon, coords.lat);
