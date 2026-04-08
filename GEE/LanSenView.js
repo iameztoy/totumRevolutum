@@ -1133,7 +1133,7 @@ var inspectorSourceSelect = ui.Select({items: ['(run query first)'], value: '(ru
 var inspectorStatusLabel = ui.Label('Select image/date and click map to inspect pixel values.', {fontSize: '12px', color: '#555'});
 var inspectorCoordLabel = ui.Label('Pixel: (none)', {fontSize: '12px', color: '#555'});
 var inspectorInfoLabel = ui.Label('Band values: (none)', {fontSize: '12px', color: '#555'});
-var inspectorChartPanel = ui.Panel({layout: ui.Panel.Layout.flow('vertical')});
+var inspectorChartPanel = ui.Panel({layout: ui.Panel.Layout.flow('vertical'), style: {stretch: 'both', margin: '0'}});
 
 function getInspectorSelectionEntries() {
   var entries = [];
@@ -1199,6 +1199,10 @@ function clearInspectorMarker() {
   state.inspectorClickLayer = null;
 }
 
+function closeInspectorDock() {
+  inspectorDock.style().set('shown', false);
+}
+
 function handleInspectorClick(coords) {
   if (uiState.view !== 'Inspector') return;
   var entry = getSelectedInspectorEntry();
@@ -1223,7 +1227,7 @@ function handleInspectorClick(coords) {
     if (!dict || Object.keys(dict).length === 0) {
       inspectorStatusLabel.setValue('No data at clicked pixel for this date/image.');
       inspectorInfoLabel.setValue('Band values: (none)');
-      inspectorDock.style().set('shown', false);
+      closeInspectorDock();
       return;
     }
 
@@ -1462,14 +1466,21 @@ var inspectorDock = ui.Panel({
   style: {
     position: 'top-right',
     width: '460px',
-    height: '360px',
-    padding: '8px',
+    height: '300px',
+    padding: '6px',
     backgroundColor: 'rgba(255,255,255,0.95)'
   }
 });
-inspectorDock.add(ui.Label('Inspector chart', {fontWeight: 'bold', margin: '0 0 4px 0'}));
+var inspectorDockHeader = ui.Panel({layout: ui.Panel.Layout.flow('horizontal'), style: {margin: '0 0 4px 0'}});
+inspectorDockHeader.add(ui.Label('Inspector chart', {fontWeight: 'bold', margin: '4px 8px 0 0'}));
+inspectorDockHeader.add(ui.Button({
+  label: 'Close',
+  style: {margin: '0', padding: '2px 8px'},
+  onClick: function() { closeInspectorDock(); }
+}));
+inspectorDock.add(inspectorDockHeader);
 inspectorDock.add(inspectorChartPanel);
-inspectorDock.style().set('shown', false);
+closeInspectorDock();
 
 // initial show state
 sidePanel.style().set('shown', uiState.panelOpen);
@@ -2292,7 +2303,7 @@ function clearResultsOnly() {
   inspectorChartPanel.clear();
   inspectorCoordLabel.setValue('Pixel: (none)');
   inspectorInfoLabel.setValue('Band values: (none)');
-  inspectorDock.style().set('shown', false);
+  closeInspectorDock();
   clearHotspotLayers();
   exportLinkLabel.setValue('');
   exportLinkLabel.style().set('shown', false);
