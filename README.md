@@ -63,5 +63,3 @@ A practical collection of Google Earth Engine (GEE) scripts for interactive mapp
 ## Source acknowledgement
 
 - `GEE_noncommercial_eecu_monitor.ipynb` source guide: <https://github.com/google/earthengine-community/blob/master/guides/linked/cloud-monitoring/earth_engine_noncommercial_eecu_monitor.ipynb>
-
-Coauthor: begsud
