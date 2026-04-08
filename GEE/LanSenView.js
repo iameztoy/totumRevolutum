@@ -541,6 +541,15 @@ function detectWaterMask(sensorKey, idsOrId, meta, methodName, thresholdVal) {
 // -------------------------
 var title = ui.Label('POI Imagery Explorer', {fontWeight: 'bold', fontSize: '18px', margin: '0 0 4px 0'});
 var subtitle = ui.Label('S2 + Landsat 4/5/7/8/9 + Sentinel-1', {fontSize: '12px', color: '#555', margin: '0 0 8px 0'});
+var aboutText = ui.Label(
+  'About: lightweight Earth Engine viewer for filtering imagery by point/polygon and date, visualizing S2/Landsat/S1, and running quick tools (inspector, water/hotspot detection, S1 reducer, export).',
+  {fontSize: '11px', color: '#444', margin: '0 0 4px 0', whiteSpace: 'pre-wrap'}
+);
+var aboutRepoLink = ui.Label(
+  'GitHub repo: iameztoy/totumRevolutum',
+  {fontSize: '11px', color: '#1a73e8', margin: '0 0 8px 0'},
+  'https://github.com/iameztoy/totumRevolutum'
+);
 
 var referenceDateLabel = ui.Label('Reference date: (not queried yet)', {fontSize: '12px', color: '#555', margin: '0 0 6px 0'});
 var statusLabel = ui.Label('Click the map to set the POI (first time).', {fontSize: '12px', margin: '0 0 8px 0'});
@@ -1420,6 +1429,8 @@ var sidePanel = ui.Panel({
 });
 sidePanel.add(title);
 sidePanel.add(subtitle);
+sidePanel.add(aboutText);
+sidePanel.add(aboutRepoLink);
 sidePanel.add(viewBar);
 sidePanel.add(settingsPanel);
 sidePanel.add(resultsPanel);
