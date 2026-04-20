@@ -1,0 +1,128 @@
+Unified Coding Best Practices
+Reusable, Platform-Agnostic, and Project-Independent
+
+This guide summarizes coding best practices that should be followed across projects, regardless of language, platform, or environment. It is intentionally generic so it can be reused in very different workflows while preserving the same standards of structure, clarity, robustness, and reproducibility.
+
+1. Structure and Workflow
+Organize code into clearly labeled, modular blocks such as: Header, User Settings, Imports/Utilities, Data Input, Processing, Analysis, Visualization, Export, Summary.
+Follow a logical workflow order so dependencies move forward: Setup → Inputs → Processing → Outputs.
+Design blocks and functions to be as independent as possible, so diagnostics, analysis, or export steps can be run separately when needed.
+Define clear interfaces between blocks and functions, with explicit inputs and outputs rather than hidden dependencies.
+Keep the workflow easy to read from top to bottom, so another person can understand it quickly.
+2. User Settings and Configuration
+Centralize all user-editable parameters in a single configuration section at the top of the script.
+Include configurable items such as paths, thresholds, dates, switches, flags, naming conventions, and optional behaviors.
+Use clear toggles for optional features, such as debug mode, export activation, previews, diagnostics, or alternative processing paths.
+Choose safe, conservative defaults so the code can run with minimal edits and with low risk of accidental overwrites or unnecessary heavy computation.
+Avoid hardcoded machine-specific values; prefer configurable variables and portable settings.
+3. Modularity and Reuse
+Write small, focused functions or components with one clear responsibility each.
+Reuse logic through utility functions rather than repeating the same code in multiple places.
+Keep reusable parts as generic as possible so they can be transferred into new projects with minimal adjustment.
+Prefer modular design over monolithic scripts.
+Separate core logic from project-specific customization.
+4. Error Prevention and Handling
+Validate inputs as early as possible: check for missing data, empty objects, invalid ranges, unexpected schemas, incompatible dimensions, or unavailable resources.
+Anticipate edge cases instead of assuming ideal inputs.
+Be explicit in comparisons, conditions, and conversions; do not rely on implicit behavior.
+Fail gracefully with clear, actionable error messages.
+Avoid silent failures. If something is missing or substituted, log it clearly.
+When appropriate, return safe placeholders or fallback outputs instead of crashing, but document that decision.
+5. Debugging and Diagnostics
+Use a global debug or development flag to activate verbose logging, extra checks, previews, and intermediate diagnostics.
+Print concise progress messages that indicate which block is running and what major step has completed.
+Make logs readable and searchable, especially in long workflows.
+Add targeted assertions and guard clauses to isolate failures quickly.
+Debug incrementally and verify intermediate outputs before moving to heavy downstream steps.
+6. Testing and Validation
+Start with small, fast test runs using reduced data, smaller areas, shorter time windows, or simplified examples.
+Inspect intermediate artifacts regularly rather than waiting until the final output to discover problems.
+Validate results using independent checks or alternative logic when possible.
+Add lightweight smoke tests for key utilities, parameter parsing, and expected behavior.
+Treat validation as part of the workflow, not as an optional afterthought.
+7. Efficiency and Performance
+Avoid redundant work by reusing intermediate results when possible.
+Cache or store expensive computations if they will be needed again.
+Allow partial execution so users can skip blocks that have already been completed.
+Break large tasks into manageable chunks rather than relying on a single heavy run.
+Make it easy to switch between a quick preview mode and a full production run.
+Optimize only after correctness and clarity are established.
+8. Style, Naming, and Readability
+Keep formatting consistent throughout the script: indentation, spacing, naming style, and code layout.
+Use descriptive names for variables, functions, and outputs.
+Apply consistent prefixes or suffixes where useful, such as for masks, filtered outputs, summaries, exports, or temporary products.
+Prefer readability and maintainability over compact or overly clever code.
+Write comments that explain the intent, assumptions, and rationale, not only the mechanics.
+Keep code easy to scan visually.
+9. Documentation and Comments
+Begin each script with a header explaining its purpose, major inputs, major outputs, and general execution notes.
+Include version information, date, and a short changelog when relevant.
+Document important assumptions, thresholds, conventions, units, and limitations.
+Use inline comments sparingly but effectively, focusing on why a decision was made.
+Ensure the code is understandable without requiring external explanation.
+10. Data and Metadata Hygiene
+Never overwrite raw data. Keep original inputs separate from processed outputs.
+Use organized, well-labeled output locations and naming conventions.
+Preserve important metadata throughout the workflow, such as identifiers, dates, parameters, units, and provenance information.
+Name outputs semantically so filenames convey key information.
+Keep schema definitions clear and consistent, especially when joining, merging, or exporting structured data.
+Validate schemas and field meanings before combining datasets.
+11. Reproducibility and Versioning
+Include a version tag, date, and short summary of changes in the header.
+Save or record the parameter values used to generate outputs.
+Ensure deterministic behavior whenever possible by controlling randomness and documenting important dependencies.
+Keep a clear record of which configuration produced which result.
+Document the minimum environment or prerequisites needed to run the workflow.
+12. Collaboration and Shareability
+Write code so that another person can run it with minimal setup.
+Minimize unnecessary dependencies and prefer widely available tools and libraries.
+Make assumptions explicit rather than leaving them embedded in the logic.
+Include notes about optional settings, known limitations, and expected outputs.
+Treat the code as something that may need to be reused, reviewed, or maintained by others.
+13. Development Mode vs. Clean Mode
+Support two clear execution modes:
+a development mode with verbose checks, logs, previews, and diagnostics
+a clean mode for quiet, stable, repeatable execution
+Control this behavior through one or very few switches.
+Make the transition between both modes frictionless, without requiring edits across many parts of the code.
+14. Reliability Mindset
+Code defensively: assume that missing values, inconsistent inputs, misalignments, and unexpected cases will occur.
+Prefer simple, correct, and transparent solutions before introducing optimization or complexity.
+Build progressively: first make it work, then make it robust, then make it efficient.
+Refine workflows iteratively, validating each improvement before adding the next layer.
+Maintain a bias toward clarity, traceability, and trustworthiness.
+Standard Reusable Block Skeleton
+
+This structure can be used as a default starting template for new scripts or pipelines:
+
+Header and Changelog
+Purpose, scope, version, date, authors, inputs/outputs, quick run notes
+User Settings
+Paths, thresholds, switches, flags, dates, naming rules, execution options
+Imports and Utilities
+Reusable helpers, validators, assertions, formatting utilities
+Data Input
+Load data, validate availability, confirm schema, snapshot settings
+Processing
+Main transformations, intermediate products, reusable computation steps
+Analysis
+Metrics, summaries, comparisons, cross-checks, diagnostics
+Visualization (Optional)
+Previews, plots, maps, debug displays, quality checks
+Export
+Controlled by export flags, with consistent naming and metadata output
+Summary Log
+What ran, where outputs were saved, warnings, assumptions, and key notes
+Compact Reusable Principle
+
+A good coding workflow should be:
+
+structured
+modular
+configurable
+readable
+defensive
+testable
+efficient
+reproducible
+shareable
