@@ -1,5 +1,7 @@
 // =======================================================
-// Sentinel-1 / OPERA DSWx-S1 monthly image counts
+// Sentinel-1 / OPERA DSWx-S1 monthly counts
+// + combined all-satellite temporal resolution at a point
+//
 // Future-proof version for Sentinel-1A/B/C/D and OPERA naming changes
 // =======================================================
 
@@ -9,12 +11,29 @@
 // -----------------------------
 
 var aoi = geometry;
+var aoiGeom = ee.Geometry(aoi);
 
 var start = '2014-01-01';
 var nMonths = 200;
 
 var startDate = ee.Date(start);
 var endDate = startDate.advance(nMonths, 'month');
+
+
+// -----------------------------
+// Temporal-resolution point
+// -----------------------------
+//
+// If geometry is a point, the centroid is the same point.
+// If geometry is a polygon, this uses the centroid of the polygon.
+//
+// If you prefer to force your own point, comment the centroid line
+// and uncomment/edit the Point line below.
+
+var cadencePoint = aoiGeom.centroid(1);
+
+// Optional manual point override:
+// var cadencePoint = ee.Geometry.Point([-3.7038, 40.4168]);  // lon, lat
 
 
 // -----------------------------
@@ -27,17 +46,26 @@ var operaS1 = ee.ImageCollection('OPERA/DSWX/L3_V1/S1');
 
 
 // -----------------------------
+// Map display
+// -----------------------------
+
+Map.centerObject(aoiGeom, 9);
+Map.addLayer(aoiGeom, {}, 'AOI');
+Map.addLayer(cadencePoint, {color: 'red'}, 'Cadence point');
+
+
+// -----------------------------
 // Diagnostics
 // -----------------------------
 //
-// These histograms are useful because they show the exact platform names
-// currently stored in each collection. If OTHER > 0 in the charts,
-// check these histograms and add the new name to the aliases below.
+// These histograms show the exact platform names currently stored.
+// If OTHER > 0 in the charts, check these histograms and add the
+// new name to the alias lists below.
 
 print(
   'Raw Sentinel-1 platform_number histogram, AOI + date range',
   rawS1
-    .filterBounds(aoi)
+    .filterBounds(aoiGeom)
     .filterDate(startDate, endDate)
     .aggregate_histogram('platform_number')
 );
@@ -45,15 +73,17 @@ print(
 print(
   'OPERA DSWx-S1 SPACECRAFT_NAME histogram, AOI + date range',
   operaS1
-    .filterBounds(aoi)
+    .filterBounds(aoiGeom)
     .filterDate(startDate, endDate)
     .aggregate_histogram('SPACECRAFT_NAME')
 );
 
+print('Cadence point used for temporal resolution', cadencePoint);
 
-// -----------------------------
-// Helper function
-// -----------------------------
+
+// =======================================================
+// Helper functions
+// =======================================================
 
 function getPlatformCount(hist, aliases) {
   aliases = ee.List(aliases);
@@ -67,7 +97,7 @@ function getPlatformCount(hist, aliases) {
 
 
 // =======================================================
-// Raw Sentinel-1 GRD monthly counts
+// Raw Sentinel-1 GRD monthly counts over AOI
 // =======================================================
 //
 // COPERNICUS/S1_GRD usually stores platform_number as A, B, C, or D.
@@ -79,7 +109,7 @@ function monthlyRawS1CountFeatures(ic, label) {
     var e = s.advance(1, 'month');
 
     var c = ic
-      .filterBounds(aoi)
+      .filterBounds(aoiGeom)
       .filterDate(s, e);
 
     var hist = ee.Dictionary(c.aggregate_histogram('platform_number'));
@@ -133,18 +163,16 @@ function monthlyRawS1CountFeatures(ic, label) {
 
 
 // =======================================================
-// OPERA DSWx-S1 monthly counts
+// OPERA DSWx-S1 monthly counts over AOI
 // =======================================================
 //
 // OPERA uses SPACECRAFT_NAME.
 // In your current AOI/date range, you found:
-//   Sentinel-1:   233
-//   Sentinel-1A/B: 1238
+//   Sentinel-1
+//   Sentinel-1A/B
 //
-// This means OPERA currently does not separate S1A and S1B
-// in this property for your data. However, the script below is left open:
-// if OPERA starts reporting Sentinel-1A, Sentinel-1B, Sentinel-1C,
-// Sentinel-1D, or combined C/D categories in the future, those will be counted.
+// The script is left open for future values such as Sentinel-1A,
+// Sentinel-1B, Sentinel-1C, Sentinel-1D, or combined C/D categories.
 
 function monthlyOperaS1CountFeatures(ic, label) {
   var months = ee.List.sequence(0, nMonths - 1).map(function(i) {
@@ -152,19 +180,17 @@ function monthlyOperaS1CountFeatures(ic, label) {
     var e = s.advance(1, 'month');
 
     var c = ic
-      .filterBounds(aoi)
+      .filterBounds(aoiGeom)
       .filterDate(s, e);
 
     var hist = ee.Dictionary(c.aggregate_histogram('SPACECRAFT_NAME'));
 
-    // Generic Sentinel-1, platform not specified.
     var s1Unspecified = getPlatformCount(hist, [
       'Sentinel-1',
       'SENTINEL-1',
       'S1'
     ]);
 
-    // Separate satellites, if OPERA reports them in the future.
     var s1a = getPlatformCount(hist, [
       'Sentinel-1A',
       'SENTINEL-1A',
@@ -198,8 +224,7 @@ function monthlyOperaS1CountFeatures(ic, label) {
     ]);
 
     // Combined categories.
-    // These should not be split into separate satellites,
-    // because that would double-count.
+    // These are not split into separate satellites to avoid double-counting.
     var s1ab = getPlatformCount(hist, [
       'Sentinel-1A/B',
       'SENTINEL-1A/B',
@@ -256,8 +281,6 @@ function monthlyOperaS1CountFeatures(ic, label) {
       S1C_D: s1cd,
       S1A_B_C_D: s1abcd,
 
-      // If this is > 0, OPERA has introduced a new SPACECRAFT_NAME value
-      // not captured by the aliases above.
       OTHER: other
     });
   });
@@ -266,9 +289,200 @@ function monthlyOperaS1CountFeatures(ic, label) {
 }
 
 
-// -----------------------------
+// =======================================================
+// Combined all-satellite temporal resolution at cadence point
+// =======================================================
+//
+// This uses all images together, regardless of whether they come from
+// S1A, S1B, S1C, S1D, or a combined OPERA category.
+//
+// Important:
+// - Images are sorted by system:time_start.
+// - Consecutive acquisitions from different days use calendar-day spacing.
+// - Consecutive acquisitions within the same day use an effective fraction:
+//      2 images that day -> 0.5 days
+//      3 images that day -> 0.333 days
+//      4 images that day -> 0.25 days
+//
+// The script also reports exact time difference in days, using acquisition
+// timestamps, as exact_interval_days. The chart uses effective_interval_days.
+
+function observationsAtPointAllSatellites(ic, pointGeom, label, platformProp) {
+  var withProps = ic
+    .filterBounds(pointGeom)
+    .filterDate(startDate, endDate)
+    .map(function(img) {
+      var t = ee.Date(img.get('system:time_start'));
+      var dateString = t.format('YYYY-MM-dd');
+      var datetimeString = t.format('YYYY-MM-dd HH:mm:ss');
+
+      var platformValue = ee.String(
+        ee.Algorithms.If(
+          img.get(platformProp),
+          img.get(platformProp),
+          'missing'
+        )
+      );
+
+      return img.set({
+        obs_date: dateString,
+        obs_datetime: datetimeString,
+        obs_millis: t.millis(),
+        platform_value: platformValue
+      });
+    });
+
+  // This removes exact duplicate acquisition records with the same timestamp
+  // and same platform value. It helps avoid counting duplicated granules as
+  // separate acquisitions.
+  var deduped = withProps
+    .distinct(['obs_millis', 'platform_value'])
+    .sort('system:time_start');
+
+  var dateHist = ee.Dictionary(deduped.aggregate_histogram('obs_date'));
+
+  var n = deduped.size();
+  var imgList = deduped.toList(n);
+
+  var indices = ee.List
+    .sequence(0, n.subtract(1).max(0))
+    .slice(0, n);
+
+  var features = indices.map(function(i) {
+    i = ee.Number(i);
+    var img = ee.Image(imgList.get(i));
+
+    var dateString = ee.String(img.get('obs_date'));
+
+    return ee.Feature(null, {
+      label: label,
+      obs_index: i,
+      image_id: img.id(),
+      datetime: img.get('obs_datetime'),
+      date: dateString,
+      millis: img.get('obs_millis'),
+      platform_value: img.get('platform_value'),
+
+      // Number of acquisitions on this same date, after deduplication.
+      image_count_on_date: ee.Number(dateHist.get(dateString, 0))
+    });
+  });
+
+  return ee.FeatureCollection(features);
+}
+
+
+function combinedCadenceIntervals(obsFc, label) {
+  obsFc = obsFc.sort('millis');
+
+  var n = obsFc.size();
+  var obsList = obsFc.toList(n);
+
+  var nIntervals = n.subtract(1).max(0);
+
+  var intervalIndices = ee.List
+    .sequence(1, n.subtract(1).max(1))
+    .slice(0, nIntervals);
+
+  var features = intervalIndices.map(function(i) {
+    i = ee.Number(i);
+
+    var current = ee.Feature(obsList.get(i));
+    var previous = ee.Feature(obsList.get(i.subtract(1)));
+
+    var currentMillis = ee.Number(current.get('millis'));
+    var previousMillis = ee.Number(previous.get('millis'));
+
+    var exactIntervalDays = currentMillis
+      .subtract(previousMillis)
+      .divide(1000 * 60 * 60 * 24);
+
+    var currentDate = ee.Date(current.get('date'));
+    var previousDate = ee.Date(previous.get('date'));
+
+    var calendarIntervalDays = currentDate.difference(previousDate, 'day');
+
+    var sameDay = ee.Algorithms.IsEqual(
+      current.get('date'),
+      previous.get('date')
+    );
+
+    var imagesThisDay = ee.Number(current.get('image_count_on_date'));
+
+    var sameDayFraction = ee.Number(1).divide(imagesThisDay);
+
+    var effectiveIntervalDays = ee.Number(
+      ee.Algorithms.If(
+        sameDay,
+        sameDayFraction,
+        calendarIntervalDays
+      )
+    );
+
+    return ee.Feature(null, {
+      label: label,
+
+      date: current.get('date'),
+      datetime: current.get('datetime'),
+      platform_value: current.get('platform_value'),
+      image_id: current.get('image_id'),
+
+      previous_date: previous.get('date'),
+      previous_datetime: previous.get('datetime'),
+      previous_platform_value: previous.get('platform_value'),
+      previous_image_id: previous.get('image_id'),
+
+      image_count_on_date: imagesThisDay,
+
+      // Main value to use for the temporal-resolution chart.
+      // This applies the same-day fractional rule.
+      effective_interval_days: effectiveIntervalDays,
+
+      // Calendar-day difference between current and previous acquisition.
+      // Same-day acquisitions have calendar_interval_days = 0.
+      calendar_interval_days: calendarIntervalDays,
+
+      // Exact timestamp difference in days.
+      // Useful for checking actual acquisition-time spacing.
+      exact_interval_days: exactIntervalDays,
+
+      same_day_fraction_used: ee.Number(
+        ee.Algorithms.If(
+          sameDay,
+          sameDayFraction,
+          0
+        )
+      )
+    });
+  });
+
+  return ee.FeatureCollection(features);
+}
+
+
+function temporalResolutionAllSatellitesAtPoint(ic, pointGeom, label, platformProp) {
+  var obsFc = observationsAtPointAllSatellites(
+    ic,
+    pointGeom,
+    label,
+    platformProp
+  );
+
+  var intervalFc = combinedCadenceIntervals(
+    obsFc,
+    label
+  );
+
+  return {
+    observations: obsFc,
+    intervals: intervalFc
+  };
+}
+
+
+// =======================================================
 // Build monthly tables
-// -----------------------------
+// =======================================================
 
 var rawS1Monthly = monthlyRawS1CountFeatures(
   rawS1,
@@ -278,6 +492,25 @@ var rawS1Monthly = monthlyRawS1CountFeatures(
 var operaS1Monthly = monthlyOperaS1CountFeatures(
   operaS1,
   'OPERA DSWx-S1'
+);
+
+
+// =======================================================
+// Build combined all-satellite temporal-resolution tables
+// =======================================================
+
+var rawS1CadenceAllSatellites = temporalResolutionAllSatellitesAtPoint(
+  rawS1,
+  cadencePoint,
+  'Raw Sentinel-1 GRD',
+  'platform_number'
+);
+
+var operaS1CadenceAllSatellites = temporalResolutionAllSatellitesAtPoint(
+  operaS1,
+  cadencePoint,
+  'OPERA DSWx-S1',
+  'SPACECRAFT_NAME'
 );
 
 
@@ -365,9 +598,97 @@ function printMonthlyCharts(fc, titlePrefix, platformSeries) {
 }
 
 
-// -----------------------------
-// Print charts
-// -----------------------------
+function printTemporalResolutionCharts(cadenceResult, titlePrefix) {
+  var obsFc = cadenceResult.observations;
+  var intervalFc = cadenceResult.intervals;
+
+  print(
+    titlePrefix + ' all-satellite observations at cadence point',
+    obsFc
+  );
+
+  print(
+    titlePrefix + ' all-satellite temporal-resolution intervals at cadence point',
+    intervalFc
+  );
+
+  print(
+    titlePrefix + ' all-satellite effective temporal-resolution summary, days',
+    intervalFc.aggregate_stats('effective_interval_days')
+  );
+
+  print(
+    titlePrefix + ' exact timestamp interval summary, days',
+    intervalFc.aggregate_stats('exact_interval_days')
+  );
+
+  print(
+    titlePrefix + ' same-day acquisition count histogram',
+    obsFc.aggregate_histogram('image_count_on_date')
+  );
+
+  // Chart 1:
+  // Combined all-satellite cadence using the effective same-day fraction rule.
+  print(ui.Chart.feature.byFeature({
+    features: intervalFc,
+    xProperty: 'datetime',
+    yProperties: ['effective_interval_days']
+  }).setOptions({
+    title: titlePrefix + ' Combined All-Satellite Temporal Resolution',
+    hAxis: {
+      title: 'Observation datetime',
+      slantedText: true,
+      slantedTextAngle: 45
+    },
+    vAxis: {
+      title: 'Effective days since previous acquisition'
+    },
+    lineWidth: 1,
+    pointSize: 4
+  }));
+
+  // Chart 2:
+  // Histogram of combined all-satellite revisit intervals.
+  print(ui.Chart.feature.histogram(
+    intervalFc,
+    'effective_interval_days',
+    50
+  ).setOptions({
+    title: titlePrefix + ' Combined All-Satellite Revisit Interval Histogram',
+    hAxis: {
+      title: 'Effective days between acquisitions'
+    },
+    vAxis: {
+      title: 'Number of intervals'
+    }
+  }));
+
+  // Chart 3:
+  // Number of same-day acquisitions.
+  // This helps identify northern-latitude cases where cadence can be < 1 day.
+  print(ui.Chart.feature.byFeature({
+    features: obsFc,
+    xProperty: 'datetime',
+    yProperties: ['image_count_on_date']
+  }).setOptions({
+    title: titlePrefix + ' Number of Acquisitions on Each Observation Day',
+    hAxis: {
+      title: 'Observation datetime',
+      slantedText: true,
+      slantedTextAngle: 45
+    },
+    vAxis: {
+      title: 'Images on same date'
+    },
+    lineWidth: 1,
+    pointSize: 3
+  }));
+}
+
+
+// =======================================================
+// Print monthly charts
+// =======================================================
 
 printMonthlyCharts(
   rawS1Monthly,
@@ -395,4 +716,19 @@ printMonthlyCharts(
     'S1A_B_C_D',
     'OTHER'
   ]
+);
+
+
+// =======================================================
+// Print combined all-satellite temporal-resolution charts
+// =======================================================
+
+printTemporalResolutionCharts(
+  rawS1CadenceAllSatellites,
+  'Raw Sentinel-1 GRD'
+);
+
+printTemporalResolutionCharts(
+  operaS1CadenceAllSatellites,
+  'OPERA DSWx-S1'
 );
