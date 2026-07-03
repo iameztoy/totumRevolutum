@@ -1,7 +1,7 @@
-var aoi = /* your AOI */;
+var aoi = geometry;
 
-var start = '2024-12-01';
-var nMonths = 6;
+var start = '2014-01-01';
+var nMonths = 200;
 
 function monthlyCountFeatures(ic, platformProp, label) {
   var months = ee.List.sequence(0, nMonths - 1).map(function(i) {
@@ -15,12 +15,18 @@ function monthlyCountFeatures(ic, platformProp, label) {
       label: label,
       month: s.format('YYYY-MM'),
       total_count: c.size(),
+
       S1A: ee.Number(hist.get('A', 0))
         .add(ee.Number(hist.get('Sentinel-1A', 0))),
+
       S1B: ee.Number(hist.get('B', 0))
         .add(ee.Number(hist.get('Sentinel-1B', 0))),
+
       S1C: ee.Number(hist.get('C', 0))
-        .add(ee.Number(hist.get('Sentinel-1C', 0)))
+        .add(ee.Number(hist.get('Sentinel-1C', 0))),
+
+      S1D: ee.Number(hist.get('D', 0))
+        .add(ee.Number(hist.get('Sentinel-1D', 0)))
     });
   });
 
@@ -45,7 +51,7 @@ print('OPERA DSWx-S1 monthly table', operaS1Monthly);
 print(ui.Chart.feature.byFeature({
   features: rawS1Monthly,
   xProperty: 'month',
-  yProperties: ['S1A', 'S1B', 'S1C', 'total_count']
+  yProperties: ['S1A', 'S1B', 'S1C', 'S1D', 'total_count']
 }).setOptions({
   title: 'Raw Sentinel-1 GRD by Month',
   hAxis: {title: 'Month'},
@@ -57,7 +63,7 @@ print(ui.Chart.feature.byFeature({
 print(ui.Chart.feature.byFeature({
   features: operaS1Monthly,
   xProperty: 'month',
-  yProperties: ['S1A', 'S1B', 'S1C', 'total_count']
+  yProperties: ['S1A', 'S1B', 'S1C', 'S1D', 'total_count']
 }).setOptions({
   title: 'OPERA DSWx-S1 by Month',
   hAxis: {title: 'Month'},
