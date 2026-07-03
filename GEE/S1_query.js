@@ -1,8 +1,7 @@
 // =======================================================
 // Sentinel-1 / OPERA DSWx-S1 monthly counts
 // + combined all-satellite temporal resolution at a point
-//
-// Future-proof version for Sentinel-1A/B/C/D and OPERA naming changes
+// + 10-day moving/decadal mean temporal resolution
 // =======================================================
 
 
@@ -21,14 +20,26 @@ var endDate = startDate.advance(nMonths, 'month');
 
 
 // -----------------------------
+// Temporal-resolution settings
+// -----------------------------
+//
+// temporalWindowDays:
+//   Window length used to calculate mean temporal resolution.
+//
+// temporalStepDays:
+//   10 = one value every 10 days, good for a clean decadal time series.
+//    1 = true daily moving window, smoother but many more points.
+
+var temporalWindowDays = 10;
+var temporalStepDays = 10;
+
+
+// -----------------------------
 // Temporal-resolution point
 // -----------------------------
 //
 // If geometry is a point, the centroid is the same point.
 // If geometry is a polygon, this uses the centroid of the polygon.
-//
-// If you prefer to force your own point, comment the centroid line
-// and uncomment/edit the Point line below.
 
 var cadencePoint = aoiGeom.centroid(1);
 
@@ -57,10 +68,6 @@ Map.addLayer(cadencePoint, {color: 'red'}, 'Cadence point');
 // -----------------------------
 // Diagnostics
 // -----------------------------
-//
-// These histograms show the exact platform names currently stored.
-// If OTHER > 0 in the charts, check these histograms and add the
-// new name to the alias lists below.
 
 print(
   'Raw Sentinel-1 platform_number histogram, AOI + date range',
@@ -99,9 +106,6 @@ function getPlatformCount(hist, aliases) {
 // =======================================================
 // Raw Sentinel-1 GRD monthly counts over AOI
 // =======================================================
-//
-// COPERNICUS/S1_GRD usually stores platform_number as A, B, C, or D.
-// S1D is included so the script is ready if/when it appears.
 
 function monthlyRawS1CountFeatures(ic, label) {
   var months = ee.List.sequence(0, nMonths - 1).map(function(i) {
@@ -149,6 +153,7 @@ function monthlyRawS1CountFeatures(ic, label) {
     return ee.Feature(null, {
       label: label,
       month: s.format('YYYY-MM'),
+      month_index: ee.Number(i),
       total_count: total,
       S1A: s1a,
       S1B: s1b,
@@ -165,14 +170,6 @@ function monthlyRawS1CountFeatures(ic, label) {
 // =======================================================
 // OPERA DSWx-S1 monthly counts over AOI
 // =======================================================
-//
-// OPERA uses SPACECRAFT_NAME.
-// In your current AOI/date range, you found:
-//   Sentinel-1
-//   Sentinel-1A/B
-//
-// The script is left open for future values such as Sentinel-1A,
-// Sentinel-1B, Sentinel-1C, Sentinel-1D, or combined C/D categories.
 
 function monthlyOperaS1CountFeatures(ic, label) {
   var months = ee.List.sequence(0, nMonths - 1).map(function(i) {
@@ -223,8 +220,6 @@ function monthlyOperaS1CountFeatures(ic, label) {
       'S1D'
     ]);
 
-    // Combined categories.
-    // These are not split into separate satellites to avoid double-counting.
     var s1ab = getPlatformCount(hist, [
       'Sentinel-1A/B',
       'SENTINEL-1A/B',
@@ -268,6 +263,7 @@ function monthlyOperaS1CountFeatures(ic, label) {
     return ee.Feature(null, {
       label: label,
       month: s.format('YYYY-MM'),
+      month_index: ee.Number(i),
       total_count: total,
 
       S1_unspecified: s1Unspecified,
@@ -290,22 +286,16 @@ function monthlyOperaS1CountFeatures(ic, label) {
 
 
 // =======================================================
-// Combined all-satellite temporal resolution at cadence point
+// Combined all-satellite observations at cadence point
 // =======================================================
 //
-// This uses all images together, regardless of whether they come from
-// S1A, S1B, S1C, S1D, or a combined OPERA category.
+// This uses all images together, regardless of satellite.
+// It does not calculate revisit per satellite.
 //
-// Important:
-// - Images are sorted by system:time_start.
-// - Consecutive acquisitions from different days use calendar-day spacing.
-// - Consecutive acquisitions within the same day use an effective fraction:
-//      2 images that day -> 0.5 days
-//      3 images that day -> 0.333 days
-//      4 images that day -> 0.25 days
-//
-// The script also reports exact time difference in days, using acquisition
-// timestamps, as exact_interval_days. The chart uses effective_interval_days.
+// Same-day acquisitions use the effective fraction rule:
+//   2 images same day -> 0.5 days
+//   3 images same day -> 0.333 days
+//   4 images same day -> 0.25 days
 
 function observationsAtPointAllSatellites(ic, pointGeom, label, platformProp) {
   var withProps = ic
@@ -328,13 +318,13 @@ function observationsAtPointAllSatellites(ic, pointGeom, label, platformProp) {
         obs_date: dateString,
         obs_datetime: datetimeString,
         obs_millis: t.millis(),
+        obs_day: t.difference(startDate, 'day'),
         platform_value: platformValue
       });
     });
 
-  // This removes exact duplicate acquisition records with the same timestamp
-  // and same platform value. It helps avoid counting duplicated granules as
-  // separate acquisitions.
+  // Remove exact duplicated acquisition records with the same timestamp
+  // and same platform value.
   var deduped = withProps
     .distinct(['obs_millis', 'platform_value'])
     .sort('system:time_start');
@@ -361,9 +351,9 @@ function observationsAtPointAllSatellites(ic, pointGeom, label, platformProp) {
       datetime: img.get('obs_datetime'),
       date: dateString,
       millis: img.get('obs_millis'),
+      obs_day: img.get('obs_day'),
       platform_value: img.get('platform_value'),
 
-      // Number of acquisitions on this same date, after deduplication.
       image_count_on_date: ee.Number(dateHist.get(dateString, 0))
     });
   });
@@ -371,6 +361,10 @@ function observationsAtPointAllSatellites(ic, pointGeom, label, platformProp) {
   return ee.FeatureCollection(features);
 }
 
+
+// =======================================================
+// Combined all-satellite interval table
+// =======================================================
 
 function combinedCadenceIntervals(obsFc, label) {
   obsFc = obsFc.sort('millis');
@@ -408,7 +402,6 @@ function combinedCadenceIntervals(obsFc, label) {
     );
 
     var imagesThisDay = ee.Number(current.get('image_count_on_date'));
-
     var sameDayFraction = ee.Number(1).divide(imagesThisDay);
 
     var effectiveIntervalDays = ee.Number(
@@ -424,26 +417,22 @@ function combinedCadenceIntervals(obsFc, label) {
 
       date: current.get('date'),
       datetime: current.get('datetime'),
+      millis: currentMillis,
+      obs_day: current.get('obs_day'),
       platform_value: current.get('platform_value'),
       image_id: current.get('image_id'),
 
       previous_date: previous.get('date'),
       previous_datetime: previous.get('datetime'),
+      previous_millis: previousMillis,
+      previous_obs_day: previous.get('obs_day'),
       previous_platform_value: previous.get('platform_value'),
       previous_image_id: previous.get('image_id'),
 
       image_count_on_date: imagesThisDay,
 
-      // Main value to use for the temporal-resolution chart.
-      // This applies the same-day fractional rule.
       effective_interval_days: effectiveIntervalDays,
-
-      // Calendar-day difference between current and previous acquisition.
-      // Same-day acquisitions have calendar_interval_days = 0.
       calendar_interval_days: calendarIntervalDays,
-
-      // Exact timestamp difference in days.
-      // Useful for checking actual acquisition-time spacing.
       exact_interval_days: exactIntervalDays,
 
       same_day_fraction_used: ee.Number(
@@ -481,7 +470,103 @@ function temporalResolutionAllSatellitesAtPoint(ic, pointGeom, label, platformPr
 
 
 // =======================================================
-// Build monthly tables
+// Moving / decadal temporal-resolution summary
+// =======================================================
+//
+// Each output feature represents one temporal window.
+//
+// mean_effective_interval_days:
+//   Mean of the all-satellite effective revisit intervals whose current
+//   acquisition falls inside that window.
+
+function movingWindowTemporalResolution(intervalFc, obsFc, label, windowDays, stepDays) {
+  intervalFc = intervalFc.sort('millis');
+  obsFc = obsFc.sort('millis');
+
+  var totalDays = endDate.difference(startDate, 'day');
+
+  var nSteps = totalDays
+    .divide(stepDays)
+    .ceil();
+
+  var indices = ee.List
+    .sequence(0, nSteps.subtract(1).max(0))
+    .slice(0, nSteps);
+
+  var features = indices.map(function(k) {
+    k = ee.Number(k);
+
+    var windowStart = startDate.advance(k.multiply(stepDays), 'day');
+    var windowEnd = windowStart.advance(windowDays, 'day');
+    var windowMidpoint = windowStart.advance(ee.Number(windowDays).divide(2), 'day');
+
+    var intervalSubset = intervalFc
+      .filter(ee.Filter.gte('millis', windowStart.millis()))
+      .filter(ee.Filter.lt('millis', windowEnd.millis()));
+
+    var obsSubset = obsFc
+      .filter(ee.Filter.gte('millis', windowStart.millis()))
+      .filter(ee.Filter.lt('millis', windowEnd.millis()));
+
+    var nIntervals = intervalSubset.size();
+    var nObservations = obsSubset.size();
+
+    var meanEffective = ee.Algorithms.If(
+      nIntervals.gt(0),
+      intervalSubset.aggregate_mean('effective_interval_days'),
+      null
+    );
+
+    var minEffective = ee.Algorithms.If(
+      nIntervals.gt(0),
+      intervalSubset.aggregate_min('effective_interval_days'),
+      null
+    );
+
+    var maxEffective = ee.Algorithms.If(
+      nIntervals.gt(0),
+      intervalSubset.aggregate_max('effective_interval_days'),
+      null
+    );
+
+    var meanExact = ee.Algorithms.If(
+      nIntervals.gt(0),
+      intervalSubset.aggregate_mean('exact_interval_days'),
+      null
+    );
+
+    return ee.Feature(null, {
+      label: label,
+
+      // Human-readable dates for table inspection.
+      window_start: windowStart.format('YYYY-MM-dd'),
+      window_end: windowEnd.format('YYYY-MM-dd'),
+      window_midpoint: windowMidpoint.format('YYYY-MM-dd'),
+
+      // Numeric fields for charts.
+      millis: windowStart.millis(),
+      window_start_day: windowStart.difference(startDate, 'day'),
+      window_midpoint_day: windowMidpoint.difference(startDate, 'day'),
+
+      window_days: windowDays,
+      step_days: stepDays,
+
+      observation_count_in_window: nObservations,
+      interval_count_in_window: nIntervals,
+
+      mean_effective_interval_days: meanEffective,
+      min_effective_interval_days: minEffective,
+      max_effective_interval_days: maxEffective,
+      mean_exact_interval_days: meanExact
+    });
+  });
+
+  return ee.FeatureCollection(features);
+}
+
+
+// =======================================================
+// Build tables
 // =======================================================
 
 var rawS1Monthly = monthlyRawS1CountFeatures(
@@ -493,11 +578,6 @@ var operaS1Monthly = monthlyOperaS1CountFeatures(
   operaS1,
   'OPERA DSWx-S1'
 );
-
-
-// =======================================================
-// Build combined all-satellite temporal-resolution tables
-// =======================================================
 
 var rawS1CadenceAllSatellites = temporalResolutionAllSatellitesAtPoint(
   rawS1,
@@ -513,6 +593,22 @@ var operaS1CadenceAllSatellites = temporalResolutionAllSatellitesAtPoint(
   'SPACECRAFT_NAME'
 );
 
+var rawS1MovingTemporalResolution = movingWindowTemporalResolution(
+  rawS1CadenceAllSatellites.intervals,
+  rawS1CadenceAllSatellites.observations,
+  'Raw Sentinel-1 GRD',
+  temporalWindowDays,
+  temporalStepDays
+);
+
+var operaS1MovingTemporalResolution = movingWindowTemporalResolution(
+  operaS1CadenceAllSatellites.intervals,
+  operaS1CadenceAllSatellites.observations,
+  'OPERA DSWx-S1',
+  temporalWindowDays,
+  temporalStepDays
+);
+
 
 // =======================================================
 // Chart helpers
@@ -521,9 +617,6 @@ var operaS1CadenceAllSatellites = temporalResolutionAllSatellitesAtPoint(
 function printMonthlyCharts(fc, titlePrefix, platformSeries) {
   print(titlePrefix + ' monthly table', fc);
 
-  // Chart 1:
-  // Platform categories only.
-  // total_count is intentionally excluded to avoid overlap.
   print(ui.Chart.feature.byFeature({
     features: fc,
     xProperty: 'month',
@@ -542,8 +635,6 @@ function printMonthlyCharts(fc, titlePrefix, platformSeries) {
     pointSize: 5
   }));
 
-  // Chart 2:
-  // Total count only.
   print(ui.Chart.feature.byFeature({
     features: fc,
     xProperty: 'month',
@@ -562,9 +653,6 @@ function printMonthlyCharts(fc, titlePrefix, platformSeries) {
     pointSize: 5
   }));
 
-  // Chart 3:
-  // Combined summary:
-  // platform categories as stacked bars, total_count as line.
   var comboSeries = platformSeries.concat(['total_count']);
   var totalSeriesIndex = platformSeries.length;
 
@@ -598,7 +686,48 @@ function printMonthlyCharts(fc, titlePrefix, platformSeries) {
 }
 
 
-function printTemporalResolutionCharts(cadenceResult, titlePrefix) {
+function printMovingWindowMeanChart(movingFc, titlePrefix) {
+  // Keep only windows that actually contain intervals.
+  // This avoids chart type problems caused by long stretches of null values.
+  var validMovingFc = movingFc
+    .filter(ee.Filter.gt('interval_count_in_window', 0))
+    .filter(ee.Filter.notNull(['mean_effective_interval_days']))
+    .sort('window_start_day');
+
+  print(
+    titlePrefix + ' valid moving-window temporal-resolution table used for chart',
+    validMovingFc
+  );
+
+  var xDays = validMovingFc.aggregate_array('window_start_day');
+  var yMean = validMovingFc.aggregate_array('mean_effective_interval_days');
+
+  // Safer than ui.Chart.feature.byFeature for this case.
+  // Uses a numeric x-axis and a numeric array of mean revisit values.
+  print(ui.Chart.array.values({
+    array: ee.Array(yMean),
+    axis: 0,
+    xLabels: xDays
+  }).setOptions({
+    title: titlePrefix +
+      ' Mean Temporal Resolution, ' +
+      temporalWindowDays +
+      '-Day Window, Step ' +
+      temporalStepDays +
+      ' Day(s)',
+    hAxis: {
+      title: 'Days since ' + start
+    },
+    vAxis: {
+      title: 'Mean days between acquisitions'
+    },
+    lineWidth: 2,
+    pointSize: 4
+  }));
+}
+
+
+function printTemporalResolutionCharts(cadenceResult, movingFc, titlePrefix) {
   var obsFc = cadenceResult.observations;
   var intervalFc = cadenceResult.intervals;
 
@@ -627,18 +756,25 @@ function printTemporalResolutionCharts(cadenceResult, titlePrefix) {
     obsFc.aggregate_histogram('image_count_on_date')
   );
 
-  // Chart 1:
-  // Combined all-satellite cadence using the effective same-day fraction rule.
+  print(
+    titlePrefix + ' moving-window temporal-resolution table',
+    movingFc
+  );
+
+  print(
+    titlePrefix + ' moving-window mean temporal-resolution summary, days',
+    movingFc.aggregate_stats('mean_effective_interval_days')
+  );
+
+  // Raw interval-by-interval time series.
   print(ui.Chart.feature.byFeature({
     features: intervalFc,
-    xProperty: 'datetime',
+    xProperty: 'obs_day',
     yProperties: ['effective_interval_days']
   }).setOptions({
     title: titlePrefix + ' Combined All-Satellite Temporal Resolution',
     hAxis: {
-      title: 'Observation datetime',
-      slantedText: true,
-      slantedTextAngle: 45
+      title: 'Days since ' + start
     },
     vAxis: {
       title: 'Effective days since previous acquisition'
@@ -647,8 +783,7 @@ function printTemporalResolutionCharts(cadenceResult, titlePrefix) {
     pointSize: 4
   }));
 
-  // Chart 2:
-  // Histogram of combined all-satellite revisit intervals.
+  // Histogram of raw all-satellite intervals.
   print(ui.Chart.feature.histogram(
     intervalFc,
     'effective_interval_days',
@@ -663,19 +798,15 @@ function printTemporalResolutionCharts(cadenceResult, titlePrefix) {
     }
   }));
 
-  // Chart 3:
-  // Number of same-day acquisitions.
-  // This helps identify northern-latitude cases where cadence can be < 1 day.
+  // Number of acquisitions per observation day.
   print(ui.Chart.feature.byFeature({
     features: obsFc,
-    xProperty: 'datetime',
+    xProperty: 'obs_day',
     yProperties: ['image_count_on_date']
   }).setOptions({
     title: titlePrefix + ' Number of Acquisitions on Each Observation Day',
     hAxis: {
-      title: 'Observation datetime',
-      slantedText: true,
-      slantedTextAngle: 45
+      title: 'Days since ' + start
     },
     vAxis: {
       title: 'Images on same date'
@@ -683,6 +814,9 @@ function printTemporalResolutionCharts(cadenceResult, titlePrefix) {
     lineWidth: 1,
     pointSize: 3
   }));
+
+  // Replacement for the problematic moving-window feature chart.
+  printMovingWindowMeanChart(movingFc, titlePrefix);
 }
 
 
@@ -720,15 +854,17 @@ printMonthlyCharts(
 
 
 // =======================================================
-// Print combined all-satellite temporal-resolution charts
+// Print all-satellite temporal-resolution charts
 // =======================================================
 
 printTemporalResolutionCharts(
   rawS1CadenceAllSatellites,
+  rawS1MovingTemporalResolution,
   'Raw Sentinel-1 GRD'
 );
 
 printTemporalResolutionCharts(
   operaS1CadenceAllSatellites,
+  operaS1MovingTemporalResolution,
   'OPERA DSWx-S1'
 );
