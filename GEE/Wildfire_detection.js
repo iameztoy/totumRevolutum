@@ -1,128 +1,193 @@
-var geometry = 
-    /* color: #98ff00 */
-    /* shown: false */
-    ee.Geometry.Polygon(
-        [[[-6.744304020765339, 44.094319124293364],
-          [-9.68863995826534, 43.754061813417806],
-          [-9.13932355201534, 40.39553781728634],
-          [-4.656901677015339, 40.26991491246308],
-          [-2.7562669113903393, 41.19397800381167],
-          [-2.9869798020153393, 43.73818853099909],
-          [-4.711833317640339, 44.236174491068056]]]);
 
 // =====================================================================
 // Google Earth Engine — Burned Area & Fire Severity (Sentinel‑2)
-// Methodology following Sobrino et al. (2024) — v1.9j
+// Methodology following Sobrino et al. (2024) — v1.9n
 // ✦ Water masks: choose S2 SCL water, NDWI/mNDWI, or BOTH with union/AND.
 // ✦ Robust combiner: safe combination of (pre/post) masks without null errors.
-// ✦ Single‑date pass mosaic (datatake aware) or median composites.
+// ✦ Simple default run mode, full same-date AOI mosaic, datatake-aware single pass, or median composites.
 // ✦ Patch filter, multi‑threshold explorer, GAUL AOI, severity classes.
 // ✦ Area calc fix: NEVER reproject pixelArea(); pass stable UTM CRS to reducers.
 // ✦ SI (Separability Index) from the paper is **not** implemented (diagnostic only).
 // =====================================================================
 
 // =============================
-// 0) USER SETTINGS
+// 0) USER SETTINGS — READ THIS FIRST
 // =============================
-// AOI choice (select exactly ONE)
-var USE_DRAWN_AOI = false;          // true: use polygon drawn with Map.drawingTools()
-var USE_ADMIN_AOI = true;           // true: use GAUL admin boundaries below
+// The script now has TWO ways to run:
+//
+//   A) SIMPLE APPROACH  [DEFAULT]
+//      Use this when you want to quickly analyse one fire/current date against
+//      a previous Sentinel-2 image. In most cases you only edit:
+//        1. AOI settings below, or draw a polygon on the map.
+//        2. SIMPLE_TARGET_DATE.
+//        3. SIMPLE_PRE_MODE and, if manual, SIMPLE_MANUAL_PRE_DATE.
+//
+//   B) ADVANCED / LEGACY APPROACH
+//      Use this when you want the older, more configurable workflow:
+//      median pre/post windows, explicit pre/post dates, admin statistics,
+//      threshold tuning, water/shoreline/land-cover corrections, etc.
+//      To use it, set RUN_SIMPLE_MODE = false and then edit Section 0G.
+//
+// The processing method after image selection remains the same:
+// Sentinel-2 pre/post -> spectral indices -> dNBR2 burned mask -> optional
+// corrections -> severity grading -> statistics/exports.
 
-// GAUL admin AOI
-var ADMIN_LEVEL     = 2;            // 0 = country, 1 = ADM1, 2 = ADM2 (provinces in Spain)
-var ADMIN_COUNTRY   = 'Spain';      // GAUL ADM0_NAME
-var ADMIN_NAMES     = ['Ourense'];  // names at chosen level
-var ADMIN_STATS     = false;        // burned area (+severity) per admin unit
-var ADMIN_STATS_ALL = false;        // stats for all admin units at that level in the country
-var SHOW_ADMIN_LAYER = true;        // show selected admin boundaries on the map
+// ---------------------------------------------------------------------
+// 0A) SIMPLE APPROACH — DEFAULT QUICK RUN
+// ---------------------------------------------------------------------
+var RUN_SIMPLE_MODE = true;          // true = use the simple approach below. false = use Section 0G advanced dates.
 
-// Fire window (adjust to the fire event)
-var FIRE_DATE = '2025-08-23';       // fire extinction/peak date (approx.)
-var PRE_DAYS  = 30;                 // days before fire for pre‑fire composite window
-var POST_DAYS = 30;                 // days after fire for post‑fire composite window
+// Target/current image date. For an active fire this is the current impact date,
+// not necessarily the final post-fire severity date.
+var SIMPLE_TARGET_DATE = '2026-07-05';
 
-// Composite mode: 'median' (window composite) or 'single' (exact/nearest scene)
-var COMPOSITE_MODE = 'single';      // 'median' | 'single'
-// If COMPOSITE_MODE == 'single', specify target dates (UTC)
-var PRE_SINGLE_DATE  = '2025-08-01';
-var POST_SINGLE_DATE = '2025-08-23';
-var SINGLE_SEARCH_DAYS = 5;         // ± days if not exact
-var REQUIRE_EXACT_DATE = false;     // true -> require exact day; false -> nearest within ±window
-var PRINT_SELECTED_SCENES = true;   // console print of chosen single scenes (tiles list)
+// Pre-image selection mode:
+//   'manual'        -> use SIMPLE_MANUAL_PRE_DATE.
+//   'auto_previous' -> automatically select the closest previous Sentinel-2 pass
+//                      before the selected target/post image.
+var SIMPLE_PRE_MODE = 'manual';      // 'manual' | 'auto_previous'
+var SIMPLE_MANUAL_PRE_DATE = '2026-06-27';
+var SIMPLE_AUTO_PRE_LOOKBACK_DAYS = 30;
 
-// Sentinel‑2 collection selection
-var S2_COLLECTION   = 'SR';         // 'SR' (Surface Reflectance) or 'L1C' (Top‑of‑Atmosphere)
+// Full same-date AOI mosaics:
+//   true  -> mosaic ALL Sentinel-2 images intersecting the AOI on the selected date.
+//            Recommended for large AOIs or AOIs crossing Sentinel-2 tile/datatake boundaries.
+//   false -> use the original datatake/pass-aware mosaic around the nearest image.
+var SIMPLE_PRE_FULL_DATE_MOSAIC  = true;
+var SIMPLE_POST_FULL_DATE_MOSAIC = true;
+
+// Backward-compatible aliases used internally by the processing code.
+// Normally you do not need to edit these.
+var QUICK_PREVIOUS_MODE = RUN_SIMPLE_MODE;
+var QUICK_ANALYSIS_DATE = SIMPLE_TARGET_DATE;
+var QUICK_USE_MANUAL_PRE_DATE = (SIMPLE_PRE_MODE === 'manual');
+var QUICK_MANUAL_PRE_DATE = SIMPLE_MANUAL_PRE_DATE;
+var QUICK_MANUAL_PRE_FULL_DATE_MOSAIC = SIMPLE_PRE_FULL_DATE_MOSAIC;
+var QUICK_POST_FULL_DATE_MOSAIC = SIMPLE_POST_FULL_DATE_MOSAIC;
+var QUICK_PREVIOUS_LOOKBACK_DAYS = SIMPLE_AUTO_PRE_LOOKBACK_DAYS;
+
+// ---------------------------------------------------------------------
+// 0B) AOI — choose exactly ONE source
+// ---------------------------------------------------------------------
+var USE_DRAWN_AOI = true;            // true: draw polygon with Map.drawingTools(). Recommended for quick runs.
+var USE_ADMIN_AOI = false;           // true: use GAUL administrative boundaries below.
+
+// GAUL admin AOI. Used only when USE_ADMIN_AOI = true.
+var ADMIN_LEVEL     = 2;             // 0 = country, 1 = ADM1, 2 = ADM2.
+var ADMIN_COUNTRY   = 'Spain';       // GAUL ADM0_NAME.
+var ADMIN_NAMES     = ['Ourense'];   // Names at chosen level.
+var SHOW_ADMIN_LAYER = true;         // Add selected admin boundaries to the map.
+
+// Admin statistics are optional diagnostics/outputs, not required for the core mask.
+var ADMIN_STATS     = false;         // Burned area + severity per selected admin unit.
+var ADMIN_STATS_ALL = false;         // Stats for all admin units at that level in the country.
+
+// ---------------------------------------------------------------------
+// 0C) SENTINEL-2 INPUTS AND CLOUD FILTERS — usually keep these defaults
+// ---------------------------------------------------------------------
+var S2_COLLECTION   = 'SR';          // 'SR' = COPERNICUS/S2_SR_HARMONIZED; 'L1C' = COPERNICUS/S2_HARMONIZED.
 var S2_SR_IC        = 'COPERNICUS/S2_SR_HARMONIZED';
 var S2_L1C_IC       = 'COPERNICUS/S2_HARMONIZED';
+var MAX_SCENE_CLOUD = 60;            // Collection-level CLOUDY_PIXEL_PERCENTAGE filter.
+var SINGLE_SEARCH_DAYS = 5;          // ± days for nearest-image searches.
+var REQUIRE_EXACT_DATE = false;      // true = require exact calendar day; false = nearest within ±SINGLE_SEARCH_DAYS.
+var PRINT_SELECTED_SCENES = true;    // Print selected dates, tiles, datatakes and counts in the Console.
 
-// S2 filters
-var MAX_SCENE_CLOUD = 60;           // collection‑level filter (percent)
-var APPLY_SMOOTHING = true;         // 3×3 focal mean before thresholding
+// ---------------------------------------------------------------------
+// 0D) CORE METHOD PARAMETERS — needed for burned area and severity grading
+// ---------------------------------------------------------------------
+// Burned-area detection.
+var APPLY_SMOOTHING = true;          // 3x3 focal mean before thresholding dNBR2.
+var THRESH_DNBR2 = 0.10;             // dNBR2 >= 0.10 -> burned.
 
-// Water veto (SCL + index options)
-var APPLY_WATER_VETO   = true;      // remove water pixels before smoothing/thresholding
-var WATER_VETO_INDEX   = 'mNDWI';   // 'mNDWI' (Xu 2006, B3/B11) or 'NDWI' (McFeeters 1996, B3/B8)
-var WATER_VETO_THRESHOLD = 0;       // water if index > threshold (tune e.g. 0.05)
-var WATER_VETO_WHEN    = 'pre'; // 'pre_only' | 'post_only' | 'pre_or_post'
-var WATER_VETO_SOURCE  = 'both';    // 'index' | 's2' | 'both'
-var WATER_VETO_COMBINE = 'union';   // when source='both': 'union' (OR) | 'intersection' (AND)
-var SHOW_WATER_MASK    = true;      // show final water mask
-var SHOW_WATER_COMPONENTS = false;  // show SCL and index components separately
+// Severity grading thresholds. These are the main parameters used after the
+// burned mask is created, with the class depending on pre-fire NDVI density.
+var NDVI_LOW_MAX       = 0.40;       // NDVI < 0.40 -> low-density vegetation.
+var NDVI_FULL_MIN      = 0.75;       // NDVI >= 0.75 -> full-density vegetation; otherwise mixed.
 
-// Shoreline edge‑protection (optional)
-var APPLY_EDGE_PROTECT = true;     // if true, remove a N‑pixel ring around water to stop bleed‑over
-var EDGE_PROTECT_PIXELS = 1;        // ring width in pixels
+// Low-density vegetation severity using BAIS2.
+var TH_BAIS2_LOW_MAX   = 0.90;       // < 0.90 -> low severity.
+var TH_BAIS2_MOD_MAX   = 1.00;       // [0.90, 1.00) -> moderate; >= 1.00 -> high.
 
-// Land‑cover mask (forest + shrub)
-var USE_LC_MASK = false;            // mask to woody & shrub classes
-var USE_WORLDCOVER = true;          // true: WorldCover; false: your own LC asset
+// Mixed-density vegetation severity using NBR.
+var TH_NBR_LOW_MIN     = 0.00;       // > 0.00 -> low severity.
+var TH_NBR_MOD_MIN     = -0.30;      // <= 0.00 and > -0.30 -> moderate; <= -0.30 -> high.
+
+// Full-density vegetation severity using NBR3.
+var TH_NBR3_LOW_MIN    = 0.20;       // > 0.20 -> low severity.
+var TH_NBR3_MOD_MIN    = -0.30;      // <= 0.20 and > -0.30 -> moderate; <= -0.30 -> high.
+
+// ---------------------------------------------------------------------
+// 0E) OPTIONAL CORRECTIONS / MASKS — improve realism, but are not strictly
+//     required to calculate the raw burned area and severity
+// ---------------------------------------------------------------------
+// Water veto: removes water pixels before smoothing/thresholding to avoid
+// false burned detections over reservoirs, rivers, shorelines, etc.
+var APPLY_WATER_VETO   = true;
+var WATER_VETO_INDEX   = 'mNDWI';    // 'mNDWI' (B3/B11) or 'NDWI' (B3/B8).
+var WATER_VETO_THRESHOLD = 0;        // Water if index > threshold. Try 0.05 if too aggressive.
+var WATER_VETO_WHEN    = 'pre_or_post'; // 'pre_only' | 'post_only' | 'pre_or_post'.
+var WATER_VETO_SOURCE  = 'both';     // 'index' | 's2' | 'both'. 's2' uses SCL water when SR is selected.
+var WATER_VETO_COMBINE = 'union';    // If source='both': 'union' = SCL OR index; 'intersection' = SCL AND index.
+var SHOW_WATER_MASK    = true;
+var SHOW_WATER_COMPONENTS = false;
+
+// Shoreline edge protection: removes a small ring around water to reduce
+// dNBR2 bleed-over near water/land boundaries after smoothing.
+var APPLY_EDGE_PROTECT = true;
+var EDGE_PROTECT_PIXELS = 1;
+
+// Optional land-cover mask: restricts results to woody/shrub classes.
+// Leave false unless you explicitly want to limit the analysis by land cover.
+var USE_LC_MASK = false;
+var USE_WORLDCOVER = true;
 var WORLDCOVER_ASSET = 'ESA/WorldCover/v200/2021';
-var YOUR_OWN_LC_ASSET  = 'YOUR_OWN_ASSET'; // e.g., 'users/you/your_lc_raster'
+var YOUR_OWN_LC_ASSET  = 'YOUR_OWN_ASSET'; // e.g. 'users/you/your_lc_raster'.
 
-// Burned‑area threshold (from paper; adjust as needed)
-var THRESH_DNBR2 = 0.10;            // dNBR2 ≥ 0.10 → burned
+// Optional patch filter: removes isolated detections below a minimum size.
+var APPLY_MIN_PATCH    = true;
+var PATCH_FILTER_MODE  = 'pixel';    // 'pixel' or 'area'.
+var MIN_PATCH_PIXELS   = 25;         // Used when PATCH_FILTER_MODE='pixel'.
+var MIN_PATCH_HA       = 1;          // Used when PATCH_FILTER_MODE='area'.
+var CONNECTIVITY_EIGHT = true;       // true = 8-connected; false = 4-connected.
+var SHOW_PATCH_DEBUG   = true;
 
-// Minimum connected‑patch filter (optional)
-var APPLY_MIN_PATCH    = true;     // remove connected burned patches below a size
-var PATCH_FILTER_MODE  = 'pixel';    // 'area' (hectares) or 'pixels'
-var MIN_PATCH_HA       = 1;         // used when mode='area'
-var MIN_PATCH_PIXELS   = 25;        // used when mode='pixels'
-var CONNECTIVITY_EIGHT = true;      // true: 8‑connected, false: 4‑connected
-var SHOW_PATCH_DEBUG   = true;      // print computed minPixels/safeMax in Console
-
-// Multi‑threshold exploration (optional; default OFF)
-var RUN_MULTI_THRESH = false;       // build/display/export masks for MULTI_THRESH values
-var MULTI_THRESH = [0.06, 0.08, 0.10, 0.12, 0.14];
-var MULTI_ADD_TO_MAP = true;        // add each candidate mask as a map layer
-var MULTI_SHOW_PREPATCH = false;    // also show pre‑patch multi‑threshold masks (blue)
-var MULTI_EXPORT = false;           // export each candidate mask to Drive
-
-// Severity thresholds (Table 8)
-// NDVI pre‑fire vegetation‑density strata
-var NDVI_LOW_MAX       = 0.40;      // NDVI < 0.40 → low density
-var NDVI_FULL_MIN      = 0.75;      // NDVI ≥ 0.75 → full density; otherwise mixed
-// Low density (BAIS2)
-var TH_BAIS2_LOW_MAX   = 0.90;      // < 0.90 → low
-var TH_BAIS2_MOD_MAX   = 1.00;      // [0.90, 1.00) → moderate; ≥ 1.00 → high
-// Mixed density (NBR)
-var TH_NBR_LOW_MIN     = 0.00;      // > 0.00 → low
-var TH_NBR_MOD_MIN     = -0.30;     // (≤ 0.00 & > −0.30) → moderate; ≤ −0.30 → high
-// Full density (NBR3)
-var TH_NBR3_LOW_MIN    = 0.20;      // > 0.20 → low
-var TH_NBR3_MOD_MIN    = -0.30;     // (≤ 0.20 & > −0.30) → moderate; ≤ −0.30 → high
-
-// Area & export settings
-var AREA_METHOD   = 'utm';          // 'utm' -> set CRS in reducers; 'native' -> no CRS override
-var ANALYSIS_SCALE = 10;            // meters (used in reduceRegion)
-var EXPORT_SCALE   = 10;            // meters (rasters)
-var EXPORT_CRS     = 'EPSG:4326';   // change to a relevant UTM if desired
+// ---------------------------------------------------------------------
+// 0F) OUTPUTS, VISUALIZATION AND OPTIONAL DIAGNOSTICS
+// ---------------------------------------------------------------------
+var AREA_METHOD   = 'utm';           // 'utm' = stable UTM CRS in reducers; 'native' = no CRS override.
+var ANALYSIS_SCALE = 10;             // Meters for reduceRegion.
+var EXPORT_SCALE   = 10;             // Meters for raster exports.
+var EXPORT_CRS     = 'EPSG:4326';    // Change to a relevant UTM if preferred.
 var EXPORT_FOLDER  = 'GEE_Fire_Sobrino2024';
-var PRINT_STATS    = true;          // print totals and per‑severity table in Console
-var EXPORT_STATS   = true;          // export per‑severity CSV to Drive
-var TILE_SCALE     = 2;             // optional tileScale for reduceRegion; set null to disable
-
-// Visualization
+var PRINT_STATS    = true;           // Print totals and severity table in Console.
+var EXPORT_STATS   = true;           // Export per-severity CSV to Drive.
+var TILE_SCALE     = 2;              // Optional tileScale for reduceRegion; set null to disable.
 var PALETTE_SEVERITY = ['00FF00','FFF59D','FFA726','EF5350'];
+
+// Multi-threshold exploration is for tuning/diagnosis only. It is not required
+// for the standard burned-area/severity output.
+var RUN_MULTI_THRESH = false;
+var MULTI_THRESH = [0.06, 0.08, 0.10, 0.12, 0.14];
+var MULTI_ADD_TO_MAP = true;
+var MULTI_SHOW_PREPATCH = false;
+var MULTI_EXPORT = false;
+
+// ---------------------------------------------------------------------
+// 0G) ADVANCED / LEGACY DATE AND COMPOSITE SETTINGS
+//     Used only when RUN_SIMPLE_MODE = false
+// ---------------------------------------------------------------------
+// FIRE_DATE controls labels and, in median mode, the pre/post windows.
+var FIRE_DATE = '2026-07-05';
+var PRE_DAYS  = 10;                  // Median mode: days before FIRE_DATE for pre-fire composite.
+var POST_DAYS = 30;                  // Median mode: days after FIRE_DATE for post-fire composite.
+
+// Advanced image selection:
+//   'single' -> explicit pre/post target dates using PRE_SINGLE_DATE and POST_SINGLE_DATE.
+//   'median' -> median composites from FIRE_DATE - PRE_DAYS and FIRE_DATE + POST_DAYS.
+var COMPOSITE_MODE = 'single';       // 'single' | 'median'.
+var PRE_SINGLE_DATE  = '2026-06-25';
+var POST_SINGLE_DATE = '2026-07-05';
 
 // =============================
 // 1) HELPERS
@@ -255,6 +320,149 @@ function getS2SingleScene(aoi, targetDate) {
   return mosaic;
 }
 
+
+// Build a single-date mosaic using ALL images intersecting the AOI on the selected calendar date.
+// This is useful when the AOI is covered by several MGRS tiles or several datatakes on the same day.
+// If REQUIRE_EXACT_DATE=false, the nearest available date within ±SINGLE_SEARCH_DAYS is selected first,
+// and then all images from that selected UTC calendar date are mosaicked.
+function getS2SingleDateAllIntersecting(aoi, targetDate) {
+  var target = ee.Date(targetDate);
+  var isSR = S2_COLLECTION === 'SR';
+  var icId = isSR ? S2_SR_IC : S2_L1C_IC;
+  var start = REQUIRE_EXACT_DATE ? target : target.advance(-SINGLE_SEARCH_DAYS, 'day');
+  var end   = REQUIRE_EXACT_DATE ? target.advance(1, 'day') : target.advance(SINGLE_SEARCH_DAYS + 1, 'day');
+
+  var base = ee.ImageCollection(icId)
+    .filterBounds(aoi)
+    .filterDate(start, end)
+    .filter(ee.Filter.lte('CLOUDY_PIXEL_PERCENTAGE', MAX_SCENE_CLOUD))
+    .map(scaleSR)
+    .map(isSR ? maskS2SCL : maskS2QA60);
+
+  // First find the nearest available acquisition day to the requested target date.
+  var ranked = base.map(function(im){
+    var diffDays = ee.Number(im.date().difference(target, 'day')).abs();
+    var cloud    = ee.Number(im.get('CLOUDY_PIXEL_PERCENTAGE'));
+    return im.set('rank', diffDays.multiply(10000).add(cloud));
+  }).sort('rank');
+
+  var cnt = ranked.size();
+  var mosaic = ee.Image(ee.Algorithms.If(cnt.gt(0), (function(){
+      var first = ee.Image(ranked.first());
+      var selected = first.date();
+      var dayStart = ee.Date.fromYMD(selected.get('year'), selected.get('month'), selected.get('day'));
+      var dayEnd = dayStart.advance(1, 'day');
+
+      // Use all S2 granules intersecting the AOI on that date, not only the first image's datatake.
+      // Sort cloudier images first so clearer images are placed later in the mosaic where overlaps occur.
+      var sameDate = base.filterDate(dayStart, dayEnd).sort('CLOUDY_PIXEL_PERCENTAGE', false);
+      var ts = ee.Number(first.get('system:time_start'));
+      var ids = sameDate.aggregate_array('system:index');
+      var tiles = sameDate.aggregate_array('MGRS_TILE');
+      var datatakes = sameDate.aggregate_array('DATATAKE_IDENTIFIER');
+
+      var mosa = sameDate.mosaic().clip(aoi)
+        .set({
+          'pass_time': ts,
+          'system:time_start': ts,
+          'mosaic_tile_ids': ids,
+          'mosaic_mgrs_tiles': tiles,
+          'mosaic_datatakes': datatakes,
+          'mosaic_count': sameDate.size(),
+          'chosen_index': first.get('system:index'),
+          'chosen_cloud': first.get('CLOUDY_PIXEL_PERCENTAGE'),
+          'is_composite': false,
+          'full_date_mosaic': true,
+          'selected_date': dayStart.format('YYYY-MM-dd')
+        });
+
+      if (PRINT_SELECTED_SCENES) {
+        print('Full same-date AOI mosaic date:', dayStart.format('YYYY-MM-dd'));
+        print('  All intersecting tiles (MGRS):', tiles);
+        print('  All intersecting image count:', sameDate.size());
+        print('  Datatakes included:', datatakes);
+        print('  Nearest image used to choose date:', first.get('system:index'), 'cloud %:', first.get('CLOUDY_PIXEL_PERCENTAGE'));
+      }
+      return mosa;
+    })(), (function(){
+      var wideStart = target.advance(-SINGLE_SEARCH_DAYS, 'day');
+      var wideEnd   = target.advance(SINGLE_SEARCH_DAYS + 1, 'day');
+      if (PRINT_SELECTED_SCENES) print('No image in requested full-date mosaic window; falling back to ±', SINGLE_SEARCH_DAYS, 'days median composite.');
+      return getS2Composite(aoi, wideStart, wideEnd);
+    })()
+  ));
+
+  return mosaic;
+}
+
+// Quick mode helper: previous available single pass before the selected target/post image
+// It uses the same S2 collection, cloud filter, scaling, cloud mask and datatake-aware mosaicking.
+function getS2PreviousPassBefore(aoi, referenceImage, targetDate) {
+  var isSR = S2_COLLECTION === 'SR';
+  var icId = isSR ? S2_SR_IC : S2_L1C_IC;
+
+  // Prefer the actual selected post pass time; if unavailable, use QUICK_ANALYSIS_DATE.
+  var refMillis = ee.Algorithms.If(
+    referenceImage.get('pass_time'),
+    referenceImage.get('pass_time'),
+    ee.Date(targetDate).millis()
+  );
+  var refDate = ee.Date(refMillis);
+  var start = refDate.advance(-QUICK_PREVIOUS_LOOKBACK_DAYS, 'day');
+
+  var base = ee.ImageCollection(icId)
+    .filterBounds(aoi)
+    .filterDate(start, refDate)  // end is exclusive: only images before the target/post pass
+    .filter(ee.Filter.lte('CLOUDY_PIXEL_PERCENTAGE', MAX_SCENE_CLOUD))
+    .map(scaleSR)
+    .map(isSR ? maskS2SCL : maskS2QA60);
+
+  // Choose the closest previous pass; cloud percentage is used as a secondary ranking term.
+  var ranked = base.map(function(im){
+    var diffDays = ee.Number(refDate.difference(im.date(), 'day')).abs();
+    var cloud = ee.Number(im.get('CLOUDY_PIXEL_PERCENTAGE'));
+    return im.set('rank', diffDays.multiply(10000).add(cloud));
+  }).sort('rank');
+
+  var cnt = ranked.size();
+  var mosaic = ee.Image(ee.Algorithms.If(cnt.gt(0), (function(){
+      var first = ee.Image(ranked.first());
+      var samePass = _samePassCollection(base, first);
+      var ts = ee.Number(first.get('system:time_start'));
+      var ids = samePass.aggregate_array('system:index');
+      var tiles = samePass.aggregate_array('MGRS_TILE');
+      var mosa = samePass.mosaic().clip(aoi)
+        .set({
+          'pass_time': ts,
+          'system:time_start': ts,
+          'mosaic_tile_ids': ids,
+          'mosaic_mgrs_tiles': tiles,
+          'mosaic_count': samePass.size(),
+          'chosen_index': first.get('system:index'),
+          'chosen_cloud': first.get('CLOUDY_PIXEL_PERCENTAGE'),
+          'is_composite': false,
+          'quick_previous': true,
+          'reference_post_time': refDate.millis(),
+          'DATATAKE_IDENTIFIER': first.get('DATATAKE_IDENTIFIER'),
+          'SENSING_ORBIT_NUMBER': first.get('SENSING_ORBIT_NUMBER'),
+          'SENSING_ORBIT_DIRECTION': first.get('SENSING_ORBIT_DIRECTION')
+        });
+      if (PRINT_SELECTED_SCENES) {
+        print('Quick mode — previous pass time:', ee.Date(ts).format('YYYY-MM-dd HH:mm'));
+        print('  Previous tiles (MGRS):', tiles);
+        print('  Previous count:', samePass.size(), '  Datatake:', first.get('DATATAKE_IDENTIFIER'));
+        print('  Previous chosen index:', first.get('system:index'), 'cloud %:', first.get('CLOUDY_PIXEL_PERCENTAGE'));
+      }
+      return mosa;
+    })(), (function(){
+      if (PRINT_SELECTED_SCENES) print('Quick mode — no previous image found in the lookback window; falling back to the lookback median composite.');
+      return getS2Composite(aoi, start, refDate);
+    })()
+  ));
+
+  return mosaic;
+}
+
 // Add indices used by the method
 function addIndices(img) {
   var b = { B2: img.select('B2'), B3: img.select('B3'), B4: img.select('B4'), B5: img.select('B5'), B6: img.select('B6'), B7: img.select('B7'), B8: img.select('B8'), B8A: img.select('B8A'), B11: img.select('B11'), B12: img.select('B12') };
@@ -367,6 +575,14 @@ else { throw 'No AOI source selected. Enable USE_DRAWN_AOI or USE_ADMIN_AOI.'; }
 
 Map.centerObject(AOI, 10);
 
+// In quick mode, the analysis date becomes the post/target date used in labels and exports.
+// If manual pre-date is enabled, also mirror it into PRE_SINGLE_DATE for clarity in the Console/settings.
+if (QUICK_PREVIOUS_MODE) {
+  FIRE_DATE = QUICK_ANALYSIS_DATE;
+  POST_SINGLE_DATE = QUICK_ANALYSIS_DATE;
+  if (QUICK_USE_MANUAL_PRE_DATE) PRE_SINGLE_DATE = QUICK_MANUAL_PRE_DATE;
+}
+
 var d0 = toDate(FIRE_DATE);
 var preStart  = plusDays(d0, -PRE_DAYS);
 var preEnd    = plusDays(d0, -1);
@@ -376,8 +592,30 @@ var postEnd   = plusDays(d0, POST_DAYS);
 // =============================
 // 3) COMPOSITES + INDICES
 // =============================
-var preRaw  = (COMPOSITE_MODE === 'single') ? getS2SingleScene(AOI, PRE_SINGLE_DATE)  : getS2Composite(AOI, preStart,  preEnd);
-var postRaw = (COMPOSITE_MODE === 'single') ? getS2SingleScene(AOI, POST_SINGLE_DATE) : getS2Composite(AOI, postStart, postEnd);
+var preRaw, postRaw;
+if (QUICK_PREVIOUS_MODE) {
+  // Quick mode:
+  //   POST = nearest pass/date to QUICK_ANALYSIS_DATE.
+  //   PRE  = either QUICK_MANUAL_PRE_DATE, or the previous available pass before POST.
+  postRaw = QUICK_POST_FULL_DATE_MOSAIC ?
+    getS2SingleDateAllIntersecting(AOI, QUICK_ANALYSIS_DATE) :
+    getS2SingleScene(AOI, QUICK_ANALYSIS_DATE);
+
+  if (QUICK_USE_MANUAL_PRE_DATE) {
+    preRaw = QUICK_MANUAL_PRE_FULL_DATE_MOSAIC ?
+      getS2SingleDateAllIntersecting(AOI, QUICK_MANUAL_PRE_DATE) :
+      getS2SingleScene(AOI, QUICK_MANUAL_PRE_DATE);
+    if (PRINT_SELECTED_SCENES) {
+      print('Quick mode — manual pre-date requested:', QUICK_MANUAL_PRE_DATE);
+      print('Quick mode — manual pre full same-date AOI mosaic:', QUICK_MANUAL_PRE_FULL_DATE_MOSAIC);
+    }
+  } else {
+    preRaw = getS2PreviousPassBefore(AOI, postRaw, QUICK_ANALYSIS_DATE);
+  }
+} else {
+  preRaw  = (COMPOSITE_MODE === 'single') ? getS2SingleScene(AOI, PRE_SINGLE_DATE)  : getS2Composite(AOI, preStart,  preEnd);
+  postRaw = (COMPOSITE_MODE === 'single') ? getS2SingleScene(AOI, POST_SINGLE_DATE) : getS2Composite(AOI, postStart, postEnd);
+}
 if (PRINT_SELECTED_SCENES) {
   var preMsg  = ee.Algorithms.If(preRaw.get('pass_time'), ee.Date(preRaw.get('pass_time')).format('YYYY-MM-dd HH:mm'), ee.String('Composite ').cat(ee.Date(preStart).format('YYYY-MM-dd')).cat(' → ').cat(ee.Date(preEnd).format('YYYY-MM-dd')));
   var postMsg = ee.Algorithms.If(postRaw.get('pass_time'), ee.Date(postRaw.get('pass_time')).format('YYYY-MM-dd HH:mm'), ee.String('Composite ').cat(ee.Date(postStart).format('YYYY-MM-dd')).cat(' → ').cat(ee.Date(postEnd).format('YYYY-MM-dd')));
@@ -532,9 +770,9 @@ var totalArea_ha = totalArea_m2.divide(10000);
 // By severity
 var grouped = areaImg.addBands(severity).reduceRegion(reduceArgs({reducer: ee.Reducer.sum().group({groupField: 1, groupName: 'severity'})}));
 var groups = ee.List(grouped.get('groups'));
-var sevFC = ee.FeatureCollection(groups.map(function(g){ g = ee.Dictionary(g); var sev = ee.Number(g.get('severity')); var area_m2 = ee.Number(g.get('sum')); var area_ha = area_m2.divide(10000); var cls = ee.String(ee.Algorithms.If(sev.eq(1), 'low', ee.Algorithms.If(sev.eq(2), 'moderate', ee.Algorithms.If(sev.eq(3), 'high', 'other')))); return ee.Feature(null, {version: 'v1.9j', fire_date: FIRE_DATE, severity: sev, class: cls, area_m2: area_m2, area_ha: area_ha}); }));
+var sevFC = ee.FeatureCollection(groups.map(function(g){ g = ee.Dictionary(g); var sev = ee.Number(g.get('severity')); var area_m2 = ee.Number(g.get('sum')); var area_ha = area_m2.divide(10000); var cls = ee.String(ee.Algorithms.If(sev.eq(1), 'low', ee.Algorithms.If(sev.eq(2), 'moderate', ee.Algorithms.If(sev.eq(3), 'high', 'other')))); return ee.Feature(null, {version: 'v1.9l', fire_date: FIRE_DATE, severity: sev, class: cls, area_m2: area_m2, area_ha: area_ha}); }));
 if (PRINT_STATS) { print('UTM CRS used (if method=utm):', utmCrs); print('Total burned area (ha) [method=' + AREA_METHOD + ', scale=' + ANALYSIS_SCALE + 'm]:', totalArea_ha); print('Burned area by severity (ha):', sevFC); }
-if (EXPORT_STATS) { Export.table.toDrive({ collection: sevFC, description: 'S2_BurnedArea_BySeverity_' + FIRE_DATE + '_v19j', folder: EXPORT_FOLDER, fileNamePrefix: 'burned_area_by_severity_' + FIRE_DATE + '_v19j', fileFormat: 'CSV' }); }
+if (EXPORT_STATS) { Export.table.toDrive({ collection: sevFC, description: 'S2_BurnedArea_BySeverity_' + FIRE_DATE + '_v19l', folder: EXPORT_FOLDER, fileNamePrefix: 'burned_area_by_severity_' + FIRE_DATE + '_v19l', fileFormat: 'CSV' }); }
 
 // =============================
 // 8b) OPTIONAL: ADMIN‑LEVEL STATISTICS (per GAUL unit)
@@ -551,14 +789,14 @@ if (USE_ADMIN_AOI && ADMIN_STATS) {
     var ha_low   = ee.Number(areaImg.updateMask(severity.eq(1)).reduceRegion(ee.Dictionary(base).set('reducer', ee.Reducer.sum())).get('area')).divide(10000);
     var ha_mod   = ee.Number(areaImg.updateMask(severity.eq(2)).reduceRegion(ee.Dictionary(base).set('reducer', ee.Reducer.sum())).get('area')).divide(10000);
     var ha_high  = ee.Number(areaImg.updateMask(severity.eq(3)).reduceRegion(ee.Dictionary(base).set('reducer', ee.Reducer.sum())).get('area')).divide(10000);
-    return f.set({ version: 'v1.9j', fire_date: FIRE_DATE, admin_level: ADMIN_LEVEL, admin_name: f.get(nameField), admin_code: f.get(codeField), ha_total: ha_total, ha_low: ha_low, ha_moderate: ha_mod, ha_high: ha_high, area_method: AREA_METHOD, scale_m: ANALYSIS_SCALE, utm_crs: utmCrs });
+    return f.set({ version: 'v1.9l', fire_date: FIRE_DATE, admin_level: ADMIN_LEVEL, admin_name: f.get(nameField), admin_code: f.get(codeField), ha_total: ha_total, ha_low: ha_low, ha_moderate: ha_mod, ha_high: ha_high, area_method: AREA_METHOD, scale_m: ANALYSIS_SCALE, utm_crs: utmCrs });
   });
   print('Burned area by admin (GAUL L' + ADMIN_LEVEL + '):', adminStats);
-  if (EXPORT_STATS) { Export.table.toDrive({ collection: adminStats, description: 'S2_BurnedArea_ByAdmin_L' + ADMIN_LEVEL + '_' + FIRE_DATE + '_v19j', folder: EXPORT_FOLDER, fileNamePrefix: 'burned_area_by_admin_L' + ADMIN_LEVEL + '_' + FIRE_DATE + '_v19j', fileFormat: 'CSV' }); }
+  if (EXPORT_STATS) { Export.table.toDrive({ collection: adminStats, description: 'S2_BurnedArea_ByAdmin_L' + ADMIN_LEVEL + '_' + FIRE_DATE + '_v19l', folder: EXPORT_FOLDER, fileNamePrefix: 'burned_area_by_admin_L' + ADMIN_LEVEL + '_' + FIRE_DATE + '_v19l', fileFormat: 'CSV' }); }
 }
 
 // =============================
 // 9) EXPORT RASTERS
 // =============================
-Export.image.toDrive({ image: burned.rename('burned'), description: 'S2_BurnedMask_dNBR2_'+FIRE_DATE+'_v19j', folder: EXPORT_FOLDER, fileNamePrefix: 'burned_'+FIRE_DATE+'_v19j', region: AOI, scale: EXPORT_SCALE, crs: EXPORT_CRS, maxPixels: 1e13 });
-Export.image.toDrive({ image: severity.rename('severity'), description: 'S2_FireSeverity_'+FIRE_DATE+'_v19j', folder: EXPORT_FOLDER, fileNamePrefix: 'severity_'+FIRE_DATE+'_v19j', region: AOI, scale: EXPORT_SCALE, crs: EXPORT_CRS, maxPixels: 1e13 });
+Export.image.toDrive({ image: burned.rename('burned'), description: 'S2_BurnedMask_dNBR2_'+FIRE_DATE+'_v19l', folder: EXPORT_FOLDER, fileNamePrefix: 'burned_'+FIRE_DATE+'_v19l', region: AOI, scale: EXPORT_SCALE, crs: EXPORT_CRS, maxPixels: 1e13 });
+Export.image.toDrive({ image: severity.rename('severity'), description: 'S2_FireSeverity_'+FIRE_DATE+'_v19l', folder: EXPORT_FOLDER, fileNamePrefix: 'severity_'+FIRE_DATE+'_v19l', region: AOI, scale: EXPORT_SCALE, crs: EXPORT_CRS, maxPixels: 1e13 });
