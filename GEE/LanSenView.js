@@ -108,6 +108,9 @@ var state = {
   layerFamilies: {}, // baseKey -> [variantKey1, variantKey2, ...]
   waterLayer: null,
   waterEntries: [],
+  waterExportAoi: null,
+  waterExportAoiLayer: null,
+  activeDrawingPurpose: 'queryAoi', // 'queryAoi' | 'waterExportAoi'
   s1ReducerLayer: null,
   exportDownloadUrl: null,
   hotspotEntries: [],
@@ -149,21 +152,35 @@ function clearDrawingLayerGeometry() {
   gl.geometries().reset([]);
 }
 
-function updatePolygonFromDrawing() {
-  if (drawingTools.layers().length() === 0) return;
+function getCurrentDrawingGeometry() {
+  if (drawingTools.layers().length() === 0) return null;
   var gl = drawingTools.layers().get(0);
   var geoms = gl.geometries();
-  if (geoms.length() === 0) {
+  if (geoms.length() === 0) return null;
+  return ee.Geometry(geoms.get(0));
+}
+
+function updatePolygonFromDrawing() {
+  var geom = getCurrentDrawingGeometry();
+  if (!geom) {
     state.aoiPolygon = null;
     return;
   }
-  state.aoiPolygon = ee.Geometry(geoms.get(0));
+  state.aoiPolygon = geom;
   poiInfo.setValue('AOI polygon: ready');
   statusLabel.setValue('AOI polygon ready. Click "Query imagery".');
 }
 
-drawingTools.onDraw(updatePolygonFromDrawing);
-drawingTools.onEdit(updatePolygonFromDrawing);
+function handleDrawingChanged() {
+  if (state.activeDrawingPurpose === 'waterExportAoi') {
+    updateWaterExportAoiFromDrawing();
+  } else {
+    updatePolygonFromDrawing();
+  }
+}
+
+drawingTools.onDraw(handleDrawingChanged);
+drawingTools.onEdit(handleDrawingChanged);
 
 // -------------------------
 // Helpers
@@ -615,6 +632,7 @@ var drawPolygonBtn = ui.Button({
   style: {stretch: 'horizontal'},
   onClick: function() {
     if (aoiModeSelect.getValue() !== 'Polygon') return statusLabel.setValue('Switch AOI mode to Polygon first.');
+    state.activeDrawingPurpose = 'queryAoi';
     getDrawingLayer();
     clearDrawingLayerGeometry();
     state.aoiPolygon = null;
@@ -768,14 +786,69 @@ var clearWaterBtn = ui.Button({
   }
 });
 
+var waterDrawAoiBtn = ui.Button({
+  label: 'Draw / replace export AOI',
+  style: {stretch: 'horizontal'},
+  onClick: function() {
+    state.activeDrawingPurpose = 'waterExportAoi';
+    getDrawingLayer();
+    clearDrawingLayerGeometry();
+    drawingTools.setShown(true);
+    drawingTools.setShape('polygon');
+    drawingTools.draw();
+    waterExportAoiStatusLabel.setValue('Draw the Water export AOI polygon on the map (double-click to finish).');
+  }
+});
+
+var waterUseQueryAoiBtn = ui.Button({
+  label: 'Use current query AOI / buffer',
+  style: {stretch: 'horizontal'},
+  onClick: function() {
+    var region = getCurrentQueryRegion();
+    if (!region) {
+      waterExportAoiStatusLabel.setValue('⚠️ No current query AOI/buffer found. Draw a Water export AOI instead.');
+      return;
+    }
+    setWaterExportAoi(region);
+    waterExportAoiStatusLabel.setValue('Water export AOI set from the current query AOI/buffer.');
+  }
+});
+
+var waterClearAoiBtn = ui.Button({
+  label: 'Clear export AOI',
+  style: {stretch: 'horizontal'},
+  onClick: function() {
+    clearWaterExportAoi();
+  }
+});
+
+var waterExportScaleBox = ui.Textbox({placeholder: 'Scale (m)', value: '10', style: {stretch: 'horizontal'}});
+var waterExportMaxPixelsBox = ui.Textbox({placeholder: 'Max pixels', value: '1e13', style: {stretch: 'horizontal'}});
+var waterExportFolderBox = ui.Textbox({placeholder: 'Optional Drive folder', value: '', style: {stretch: 'horizontal'}});
+var waterExportAoiStatusLabel = ui.Label('Export AOI: not set. Draw one here or reuse the query AOI/buffer.', {fontSize: '12px', color: '#555'});
+var waterExportNameLabel = ui.Label('Export name: select source/method/threshold.', {fontSize: '12px', color: '#555', whiteSpace: 'pre-wrap'});
+var runWaterExportBtn = ui.Button({
+  label: 'Export water classification to Google Drive',
+  style: {stretch: 'horizontal', fontWeight: 'bold'},
+  onClick: function() {
+    runWaterDriveExport();
+  }
+});
+
 waterSourceSelect.onChange(function() {
   refreshWaterMethodChoices();
+  updateWaterExportNamePreview();
 });
 
 waterMethodSelect.onChange(function(m) {
   if (m && m.indexOf('Co-pol') === 0) waterThresholdBox.setValue('-17');
   else if (m && m.indexOf('Cross-pol') === 0) waterThresholdBox.setValue('-24');
   else waterThresholdBox.setValue('0.0');
+  updateWaterExportNamePreview();
+});
+
+waterThresholdBox.onChange(function() {
+  updateWaterExportNamePreview();
 });
 
 // Export controls
@@ -1019,6 +1092,9 @@ function getHotspotSelectionEntries() {
   state.lists.S2.items.forEach(function(item) {
     entries.push({
       label: 'S2 | ' + item.date + ' | ' + item.tileCount + ' tiles',
+      date: item.date,
+      timeMin: item.timeMin,
+      timeMax: item.timeMax,
       sensorKey: state.lists.S2.sensorKey,
       ids: item.ids,
       which: 'S2',
@@ -1028,6 +1104,9 @@ function getHotspotSelectionEntries() {
   state.lists.LS.items.forEach(function(item) {
     entries.push({
       label: 'Landsat | ' + item.date + ' | ' + item.tileCount + ' scenes',
+      date: item.date,
+      timeMin: item.timeMin,
+      timeMax: item.timeMax,
       sensorKey: state.lists.LS.sensorKey,
       ids: item.ids,
       which: 'LS',
@@ -1380,6 +1459,21 @@ waterPanel.add(smallLabel('Defaults: optical=0.0; SAR co-pol=-17 dB; SAR cross-p
 waterPanel.add(smallLabel('Output: blue water mask over selected source image.'));
 waterPanel.add(waterStatusLabel);
 
+waterPanel.add(ui.Label('Water classification export', {fontWeight:'bold', margin:'12px 0 4px 0'}));
+waterPanel.add(smallLabel('Export AOI: draw a polygon here, or reuse the current query AOI/buffer. The saved Water export AOI is kept when you run water detection again.'));
+waterPanel.add(waterDrawAoiBtn);
+waterPanel.add(waterUseQueryAoiBtn);
+waterPanel.add(waterClearAoiBtn);
+waterPanel.add(waterExportAoiStatusLabel);
+waterPanel.add(smallLabel('Export scale (m; default 10 for S2/S1, 30 for Landsat)'));
+waterPanel.add(waterExportScaleBox);
+waterPanel.add(smallLabel('Max pixels'));
+waterPanel.add(waterExportMaxPixelsBox);
+waterPanel.add(smallLabel('Google Drive folder (optional; blank = Drive root)'));
+waterPanel.add(waterExportFolderBox);
+waterPanel.add(waterExportNameLabel);
+waterPanel.add(runWaterExportBtn);
+
 exportPanel.add(ui.Label('Export', {fontWeight:'bold', margin:'0 0 4px 0'}));
 exportPanel.add(smallLabel('Extent: current map view bounds'));
 exportPanel.add(smallLabel('Source image selection'));
@@ -1610,12 +1704,157 @@ s1ReducerSelect.onChange(function() {
   if (state.s1ReducerLayer && state.queryDone) runS1ReducerLayer();
 });
 
+function getCurrentQueryRegion() {
+  if (state.aoiMode === 'Polygon' && state.aoiPolygon) return state.aoiPolygon;
+  if (state.poi) return state.poi.buffer(bufferSlider.getValue() * 1000);
+  return null;
+}
+
+function setWaterExportAoi(region) {
+  state.waterExportAoi = ee.Geometry(region);
+  if (state.waterExportAoiLayer) {
+    map.layers().remove(state.waterExportAoiLayer);
+    state.waterExportAoiLayer = null;
+  }
+  state.waterExportAoiLayer = ui.Map.Layer(state.waterExportAoi, {color: '00FFFF'}, 'Water export AOI', true);
+  map.layers().add(state.waterExportAoiLayer);
+}
+
+function updateWaterExportAoiFromDrawing() {
+  var geom = getCurrentDrawingGeometry();
+  if (!geom) {
+    state.waterExportAoi = null;
+    waterExportAoiStatusLabel.setValue('Export AOI: not set.');
+    return;
+  }
+  setWaterExportAoi(geom);
+  waterExportAoiStatusLabel.setValue('Water export AOI ready. You can run/export water detection again using this same AOI.');
+}
+
+function clearWaterExportAoi() {
+  state.waterExportAoi = null;
+  if (state.waterExportAoiLayer) {
+    map.layers().remove(state.waterExportAoiLayer);
+    state.waterExportAoiLayer = null;
+  }
+  if (state.activeDrawingPurpose === 'waterExportAoi') clearDrawingLayerGeometry();
+  waterExportAoiStatusLabel.setValue('Export AOI cleared. Draw a new one or reuse the query AOI/buffer.');
+}
+
+function waterMethodShortName(methodName) {
+  var m = String(methodName || 'method');
+  if (m.indexOf('MNDWI') === 0) return 'MNDWI';
+  if (m.indexOf('AWEIsh') === 0) return 'AWEIsh';
+  if (m.indexOf('Co-pol') === 0) return 'CoPol';
+  if (m.indexOf('Cross-pol') === 0) return 'CrossPol';
+  return m.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function formatThresholdForName(thresholdVal) {
+  var s = String(Number(thresholdVal));
+  if (s === 'NaN') s = String(thresholdVal || 'NA');
+  return 'thr' + s.replace(/-/g, 'm').replace(/\./g, 'p').replace(/[^A-Za-z0-9_]+/g, '');
+}
+
+function buildWaterExportName(entry, methodName, thresholdVal) {
+  var sensor = entry && entry.which ? entry.which : 'sensor';
+  if (sensor === 'LS') sensor = 'Landsat';
+  var date = entry && entry.date ? entry.date : 'dateNA';
+  return 'water_' + sensor + '_' + date + '_' + waterMethodShortName(methodName) + '_' + formatThresholdForName(thresholdVal);
+}
+
+function updateWaterExportNamePreview() {
+  if (typeof waterExportNameLabel === 'undefined') return;
+  var entry = getSelectedWaterEntry();
+  if (!entry) {
+    waterExportNameLabel.setValue('Export name: select source/method/threshold.');
+    return;
+  }
+  var t = Number(waterThresholdBox.getValue());
+  if (isNaN(t)) {
+    waterExportNameLabel.setValue('Export name: threshold must be numeric.');
+    return;
+  }
+  waterExportNameLabel.setValue('Export name: ' + buildWaterExportName(entry, waterMethodSelect.getValue(), t));
+}
+
+function getWaterExportScale(entry) {
+  var val = String(waterExportScaleBox.getValue() || '').trim();
+  if (val !== '') {
+    var parsed = Number(val);
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return (entry && entry.which === 'LS') ? 30 : 10;
+}
+
+function runWaterDriveExport() {
+  var entry = getSelectedWaterEntry();
+  if (!entry) {
+    waterStatusLabel.setValue('⚠️ Select a queried image/date first.');
+    return;
+  }
+
+  var t = Number(waterThresholdBox.getValue());
+  if (isNaN(t)) {
+    waterStatusLabel.setValue('⚠️ Threshold must be numeric.');
+    return;
+  }
+
+  var region = state.waterExportAoi || getCurrentQueryRegion();
+  if (!region) {
+    waterStatusLabel.setValue('⚠️ Draw a Water export AOI or reuse the query AOI/buffer first.');
+    return;
+  }
+
+  var scale = getWaterExportScale(entry);
+  var maxPixels = Number(String(waterExportMaxPixelsBox.getValue() || '1e13'));
+  if (isNaN(maxPixels) || maxPixels <= 0) {
+    waterStatusLabel.setValue('⚠️ Max pixels must be numeric and > 0.');
+    return;
+  }
+
+  var methodName = waterMethodSelect.getValue();
+  var exportName = buildWaterExportName(entry, methodName, t);
+  var exportImg = detectWaterMask(entry.sensorKey, entry.ids, entry.meta, methodName, t)
+    .rename('water_class')
+    .toByte()
+    .clip(region)
+    .set({
+      source_sensor: entry.which,
+      source_date: entry.date,
+      water_method: waterMethodShortName(methodName),
+      water_threshold: t,
+      class_0: 'non_water',
+      class_1: 'water'
+    });
+
+  var params = {
+    image: exportImg,
+    description: exportName,
+    fileNamePrefix: exportName,
+    region: region,
+    scale: scale,
+    maxPixels: maxPixels,
+    fileFormat: 'GeoTIFF'
+  };
+
+  var folder = String(waterExportFolderBox.getValue() || '').trim();
+  if (folder !== '') params.folder = folder;
+
+  Export.image.toDrive(params);
+  waterStatusLabel.setValue('✅ Drive export task created for water classification: ' + exportName + '. Open the Tasks tab and click Run.');
+  waterExportNameLabel.setValue('Export name: ' + exportName);
+}
+
 function getWaterSelectionEntries() {
   var entries = [];
 
   state.lists.S2.items.forEach(function(item) {
     entries.push({
       label: 'S2 | ' + item.date + ' | ' + item.tileCount + ' tiles',
+      date: item.date,
+      timeMin: item.timeMin,
+      timeMax: item.timeMax,
       sensorKey: state.lists.S2.sensorKey,
       ids: item.ids,
       which: 'S2',
@@ -1626,6 +1865,9 @@ function getWaterSelectionEntries() {
   state.lists.LS.items.forEach(function(item) {
     entries.push({
       label: 'Landsat | ' + item.date + ' | ' + item.tileCount + ' scenes',
+      date: item.date,
+      timeMin: item.timeMin,
+      timeMax: item.timeMax,
       sensorKey: state.lists.LS.sensorKey,
       ids: item.ids,
       which: 'LS',
@@ -1636,6 +1878,9 @@ function getWaterSelectionEntries() {
   state.lists.S1.items.forEach(function(item) {
     entries.push({
       label: 'S1 | ' + item.date + ' | ' + item.tileCount + ' scenes',
+      date: item.date,
+      timeMin: item.timeMin,
+      timeMax: item.timeMax,
       sensorKey: state.lists.S1.sensorKey,
       ids: item.ids,
       which: 'S1',
@@ -1680,6 +1925,9 @@ function refreshWaterMethodChoices() {
   waterMethodSelect.setValue(methods[0], true);
   if (type === 'RADAR') waterThresholdBox.setValue('-17');
   else waterThresholdBox.setValue('0.0');
+  if (entry && entry.which === 'LS') waterExportScaleBox.setValue('30');
+  else waterExportScaleBox.setValue('10');
+  updateWaterExportNamePreview();
 }
 
 function clearWaterMask() {
@@ -1698,11 +1946,14 @@ function runWaterDetection() {
   if (isNaN(t)) return waterStatusLabel.setValue('Threshold must be numeric.');
 
   clearWaterMask();
-  var mask = detectWaterMask(entry.sensorKey, entry.ids, entry.meta, waterMethodSelect.getValue(), t).selfMask();
-  var layer = ui.Map.Layer(mask, {palette: ['0000FF'], opacity: 0.65}, 'Water mask', true);
+  var methodName = waterMethodSelect.getValue();
+  var mask = detectWaterMask(entry.sensorKey, entry.ids, entry.meta, methodName, t).selfMask();
+  var layerName = buildWaterExportName(entry, methodName, t) + ' display';
+  var layer = ui.Map.Layer(mask, {palette: ['0000FF'], opacity: 0.65}, layerName, true);
   map.layers().add(layer);
   state.waterLayer = layer;
-  waterStatusLabel.setValue('Water mask displayed in blue.');
+  updateWaterExportNamePreview();
+  waterStatusLabel.setValue('Water mask displayed in blue. Use the export controls below to send the 0/1 classification GeoTIFF to Drive.');
 }
 
 function getQueryDateRange() {
@@ -2297,6 +2548,7 @@ function clearResultsOnly() {
 
   clearWaterMask();
   updateWaterSourceOptions();
+  updateWaterExportNamePreview();
   updateHotspotSourceOptions();
   updateInspectorSourceOptions();
   clearInspectorMarker();
@@ -2321,6 +2573,7 @@ function clearAll() {
   state.bufferLayer = null;
   state.aoiPolygon = null;
   clearDrawingLayerGeometry();
+  clearWaterExportAoi();
   poiInfo.setValue('POI: (none)');
 
   state.queryDone = false;
