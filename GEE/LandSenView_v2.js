@@ -9,7 +9,7 @@
  *
  * FEATURES:
  * - Group Sentinel-2 & Landsat results by DATE and load mosaics per date
- * - Sentinel-2 QuickFire true-color + SWIR hotspot visualization
+ * - Sentinel-2 + Landsat 4/5/7/8/9 QuickFire natural-color + SWIR hotspot visualization
  * - Sentinel-1 per-scene
  * Iban Ameztoy 2026
  ****************************************/
@@ -44,7 +44,7 @@ var uiState = {
 var S2_COMPOSITES = [
   {name: 'True Color (4,3,2)',   type: 'rgb', bands: ['B4','B3','B2']},
   {name: 'Highlight Optimized Natural Color (4,3,2)', type: 'highlight_rgb', bands: ['B4','B3','B2']},
-  {name: 'QuickFire - True Color + SWIR Hotspots', type: 'quickfire', bands: ['B2','B3','B4','B11','B12']},
+  {name: 'QuickFire - True Color + SWIR Hotspots (Markuse)', type: 'quickfire', bands: ['B2','B3','B4','B11','B12']},
   {name: 'False Color (8,4,3)',  type: 'rgb', bands: ['B8','B4','B3']},
   {name: 'SWIR (12,8,4)',        type: 'rgb', bands: ['B12','B8','B4']},
   {name: 'Agriculture (11,8,2)', type: 'rgb', bands: ['B11','B8','B2']},
@@ -61,6 +61,7 @@ var S2_COMPOSITES = [
 var LS_COMPOSITES = [
   {name: 'Natural Color (L8/9: 4,3,2 | L4-7: 3,2,1)',           type: 'rgb', bands: ['RED','GREEN','BLUE']},
   {name: 'Highlight Optimized Natural Color (L8/9: 4,3,2 | L4-7: 3,2,1)', type: 'highlight_rgb', bands: ['RED','GREEN','BLUE']},
+  {name: 'QuickFire - Natural Color + SWIR Hotspots (L4/5/7/8/9;)', type: 'quickfire', bands: ['BLUE','GREEN','RED','SWIR1','SWIR2']},
   {name: 'Color Infrared (L8/9: 5,4,3 | L4-7: 4,3,2)',          type: 'rgb', bands: ['NIR','RED','GREEN']},
   {name: 'False Color (Urban) (L8/9: 7,6,4 | L4-7: 7,5,3)',     type: 'rgb', bands: ['SWIR2','SWIR1','RED']},
   {name: 'Agriculture (L8/9: 6,5,2 | L4-7: 5,4,1)',             type: 'rgb', bands: ['SWIR1','NIR','BLUE']},
@@ -326,18 +327,31 @@ function applyHighlightOptimizedNaturalColor(img, bands, isSurfaceReflectance) {
  * Original Sentinel Hub Evalscript by Pierre Markuse, CC BY 4.0:
  * https://custom-scripts.sentinel-hub.com/custom-scripts/sentinel-2/markuse_fire/
  *
+ * Common spectral mapping used by this app:
+ * - Sentinel-2: B2/B3/B4/B11/B12 -> BLUE/GREEN/RED/SWIR1/SWIR2
+ * - Landsat 8/9 OLI: B2/B3/B4/B6/B7 -> BLUE/GREEN/RED/SWIR1/SWIR2
+ * - Landsat 4/5 TM and Landsat 7 ETM+: B1/B2/B3/B5/B7
+ *   -> BLUE/GREEN/RED/SWIR1/SWIR2
+ *
+ * Landsat 8/9 provide the closest spectral correspondence to Sentinel-2.
+ * Landsat 4/5/7 have the required bands as well, but their SWIR passbands are
+ * broader and their radiometric characteristics differ. The visualization is
+ * therefore enabled for all supported Landsat missions, while the transferred
+ * hotspot thresholds should be treated as visualization defaults rather than
+ * as a cross-sensor calibrated fire-detection product.
+ *
  * Active settings preserved from the supplied VERSION=3 script:
  * - Base blend: URBAN 10% + natural color 40% + gamma-like natural color 50%
  * - Saturation: 1.10; stretch: 0.01 to 0.99
- * - Hotspot style 1; thresholds: 2.00, 1.50, 1.25 and 1.00 for B12+B11
+ * - Hotspot style 1; thresholds: 2.00, 1.50, 1.25 and 1.00 for SWIR2+SWIR1
  * - Hotter pixels receive progressively stronger SWIR additions in red/green
  *
- * Sentinel Hub's CLP band is not present in the GEE Sentinel-2 collections used
- * by this app. The existing "Cloud removal (display only)" option applies QA60
- * masking for L1C or SCL masking for L2A. The original B02 < 0.8 avoidance
- * helper is retained here.
+ * Sentinel Hub's CLP band is not present in the GEE collections used by this
+ * app. The existing "Cloud removal (display only)" option applies QA60/SCL for
+ * Sentinel-2 and QA_PIXEL for Landsat. The original blue-band < 0.8 avoidance
+ * helper is retained.
  */
-function applyS2QuickFireVisualization(scaledImg) {
+function applyQuickFireVisualization(commonImg) {
   var brightness = 1.00;
   var saturation = 1.10;
   var sMin = 0.01;
@@ -346,28 +360,28 @@ function applyS2QuickFireVisualization(scaledImg) {
   var boost = 1.00;
   var avoidanceHelper = 0.80;
 
-  var b2 = scaledImg.select('B2');
-  var b3 = scaledImg.select('B3');
-  var b4 = scaledImg.select('B4');
-  var b11 = scaledImg.select('B11');
-  var b12 = scaledImg.select('B12');
+  var blue = commonImg.select('BLUE');
+  var greenBand = commonImg.select('GREEN');
+  var redBand = commonImg.select('RED');
+  var swir1 = commonImg.select('SWIR1');
+  var swir2 = commonImg.select('SWIR2');
 
   var naturalColorsCC = ee.Image.cat([
-    b4.multiply(brightness).max(0).sqrt().rename('R'),
-    b3.multiply(brightness).max(0).sqrt().rename('G'),
-    b2.multiply(brightness).max(0).sqrt().rename('B')
+    redBand.multiply(brightness).max(0).sqrt().rename('R'),
+    greenBand.multiply(brightness).max(0).sqrt().rename('G'),
+    blue.multiply(brightness).max(0).sqrt().rename('B')
   ]);
 
   var naturalColors = ee.Image.cat([
-    b4.multiply(2.5 * brightness).rename('R'),
-    b3.multiply(2.5 * brightness).rename('G'),
-    b2.multiply(2.5 * brightness).rename('B')
+    redBand.multiply(2.5 * brightness).rename('R'),
+    greenBand.multiply(2.5 * brightness).rename('G'),
+    blue.multiply(2.5 * brightness).rename('B')
   ]);
 
   var urban = ee.Image.cat([
-    b12.multiply(1.2 * brightness).max(0).sqrt().rename('R'),
-    b11.multiply(1.4 * brightness).max(0).sqrt().rename('G'),
-    b4.multiply(brightness).max(0).sqrt().rename('B')
+    swir2.multiply(1.2 * brightness).max(0).sqrt().rename('R'),
+    swir1.multiply(1.4 * brightness).max(0).sqrt().rename('G'),
+    redBand.multiply(brightness).max(0).sqrt().rename('B')
   ]);
 
   // Equivalent to layerBlend(URBAN, naturalColors, naturalColorsCC, 10, 40, 50).
@@ -387,34 +401,46 @@ function applyS2QuickFireVisualization(scaledImg) {
   // Equivalent to stretch(Viz, 0.01, 0.99).
   viz = viz.subtract(sMin).divide(sMax - sMin);
 
-  var swirSum = b12.add(b11);
+  var swirSum = swir2.add(swir1);
   var hotspotMask = swirSum.gt(1.00 / hsSensitivity)
-    .and(b2.lt(avoidanceHelper));
+    .and(blue.lt(avoidanceHelper));
 
   // Preserve the original ordered hotspot tiers (strongest threshold first).
-  var greenFactor = b11.multiply(0)
+  var greenFactor = swir1.multiply(0)
     .where(swirSum.gt(1.25 / hsSensitivity), 0.10)
     .where(swirSum.gt(1.50 / hsSensitivity), 0.20)
     .where(swirSum.gt(2.00 / hsSensitivity), 0.50);
 
   var red = viz.select('R').where(
     hotspotMask,
-    viz.select('R').add(b12.multiply(boost * 0.50))
+    viz.select('R').add(swir2.multiply(boost * 0.50))
   );
 
   var green = viz.select('G').where(
     hotspotMask,
-    viz.select('G').add(b11.multiply(greenFactor).multiply(boost))
+    viz.select('G').add(swir1.multiply(greenFactor).multiply(boost))
   );
 
-  var blue = viz.select('B');
+  var blueOut = viz.select('B');
 
   // Sentinel Hub clips display output to the 0-1 range; do the same explicitly.
   return ee.Image.cat([
     red.rename('R'),
     green.rename('G'),
-    blue.rename('B')
+    blueOut.rename('B')
   ]).clamp(0, 1);
+}
+
+function applyS2QuickFireVisualization(scaledImg) {
+  var common = scaledImg.select(
+    ['B2', 'B3', 'B4', 'B11', 'B12'],
+    ['BLUE', 'GREEN', 'RED', 'SWIR1', 'SWIR2']
+  );
+  return applyQuickFireVisualization(common);
+}
+
+function applyLandsatQuickFireVisualization(commonImg) {
+  return applyQuickFireVisualization(commonImg);
 }
 
 // -------------------------
@@ -447,6 +473,7 @@ function getVisForSensor(sensorKey) {
     var lsComp = getLSComposite();
     if (lsComp.type === 'ndvi') return ndviVisParams();
     if (lsComp.type === 'highlight_rgb') return highlightNaturalColorVisParams();
+    if (lsComp.type === 'quickfire') return quickFireVisParams();
     return opticalVisParams();
   }
   return opticalVisParams();
@@ -504,6 +531,10 @@ function makeDisplayImage(sensorKey, idsOrId, meta) {
 
       if (compL.type === 'highlight_rgb') {
         return applyHighlightOptimizedNaturalColor(common, compL.bands, sensorKey === 'Landsat_L2SR');
+      }
+
+      if (compL.type === 'quickfire') {
+        return applyLandsatQuickFireVisualization(common);
       }
 
       return common.select(compL.bands);
