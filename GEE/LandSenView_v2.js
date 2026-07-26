@@ -44,7 +44,7 @@ var uiState = {
 var S2_COMPOSITES = [
   {name: 'True Color (4,3,2)',   type: 'rgb', bands: ['B4','B3','B2']},
   {name: 'Highlight Optimized Natural Color (4,3,2)', type: 'highlight_rgb', bands: ['B4','B3','B2']},
-  {name: 'QuickFire - True Color + SWIR Hotspots (Markuse)', type: 'quickfire', bands: ['B2','B3','B4','B11','B12']},
+  {name: 'QuickFire - True Color + SWIR Hotspots', type: 'quickfire', bands: ['B2','B3','B4','B11','B12']},
   {name: 'False Color (8,4,3)',  type: 'rgb', bands: ['B8','B4','B3']},
   {name: 'SWIR (12,8,4)',        type: 'rgb', bands: ['B12','B8','B4']},
   {name: 'Agriculture (11,8,2)', type: 'rgb', bands: ['B11','B8','B2']},
