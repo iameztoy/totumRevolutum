@@ -1,67 +1,141 @@
-# totumRevolutum – Google Earth Engine Script Collection
+# totumRevolutum
 
-A practical collection of Google Earth Engine (GEE) scripts for interactive mapping, imagery exploration, export orchestration, and benchmarking workflows.
+A personal vault of independent geospatial, remote-sensing, satellite-imagery,
+and Google Earth Engine (GEE) scripts.
 
-## Repository structure (`GEE/`)
+The repository is intentionally heterogeneous. Files are not components of one
+application and should not be expected to share a runtime, dependency set, or
+release cycle. Each script or notebook should remain understandable and usable
+on its own so it can be copied into the appropriate environment when needed.
 
-- `AreaCalculator_Widget.js` — interactive polygon area calculator (m², ha, km²) using drawing tools.
-- `Go2Point.js` — simple UI panel to jump to coordinates (`lon, lat`) and place a marker.
-- `LanSenView.js` — point-of-interest imagery explorer across Sentinel-2, Landsat, and Sentinel-1 with date-grouped browsing and visualization presets.
-- `Wildfire_detection.js` — burned-area and fire-severity workflow (Sentinel-2) with water masking options, thresholding, patch filtering, severity mapping, and exports.
-- `maxS1Year.js` — quick Sentinel-1 (VV/VH) annual max composite example over Africa to inspect radar coverage.
-- `ExportTile_scheleton.js` — reusable skeleton for tile/AOI-based batch exports to Earth Engine assets.
-- `AlphaEarth_Benchmark_Mode.js` — supervised land-cover classification workflow with single-run mode and benchmark mode (AOIs × classifiers).
-- `AlphaEarth_Benchmark_Mode_v2.js` — updated benchmark variant with cleaner benchmark execution and CSV-first benchmark exports (Google Drive/Asset).
-- `GEE_noncommercial_eecu_monitor.ipynb` — notebook for monitoring noncommercial Earth Engine EECU consumption (adapted from the Earth Engine Community guide).
+## Repository layout
 
-## Workflow categories
+- `GEE/` — scripts for the Earth Engine Code Editor and Earth Engine-related
+  notebooks.
+- `Apps/` — a curated list of useful external geospatial applications.
+- `tools/` — repository-level validation utilities; these do not form part of
+  the geospatial scripts themselves.
 
-### 1) Fast map utilities
+## Script catalog
 
-- **Area calculator** (`AreaCalculator_Widget.js`): draw one polygon, compute geodesic area, clear, repeat.
-- **Go-to point** (`Go2Point.js`): paste coordinates to center the map and visualize a point of interest.
+| File | Environment | Purpose |
+| --- | --- | --- |
+| `GEE/AreaCalculator_Widget.js` | GEE Code Editor | Interactive drawing tool that reports polygon area in m², ha, and km². |
+| `GEE/DW_water_retrieval.js` | GEE Code Editor | Dynamic World water/inundated-vegetation viewer and exporter, including batch and SWOT-date-window workflows. |
+| `GEE/ExportTile_scheleton.js` | GEE Code Editor | Reusable scaffold for tile- or AOI-based Earth Engine asset exports. |
+| `GEE/GEE_noncommercial_eecu_monitor.ipynb` | Google Colab | Cloud Monitoring notebook for reviewing noncommercial Earth Engine EECU consumption. |
+| `GEE/Go2Point.js` | GEE Code Editor | Coordinate-entry widget that centers the map and displays a point. |
+| `GEE/LanSenView.js` | GEE Code Editor | Point-of-interest Sentinel-2, Landsat, and Sentinel-1 imagery explorer. |
+| `GEE/LandSenView_v2.js` | GEE Code Editor | Extended imagery explorer with additional visualization, inspector, water, hotspot, and export functionality. |
+| `GEE/maxS1Year.js` | GEE Code Editor | Compact Sentinel-1 VV/VH annual maximum-composite example over Africa. |
+| `GEE/MonthYear_IC_availability.js` | GEE Code Editor | Lists the years, months, and year-month combinations available in an ImageCollection. |
+| `GEE/Query_HydroBasins.js` | GEE Code Editor | Interactive HydroBASINS level selector and attribute explorer. |
+| `GEE/S1_Opera_query.js` | GEE Code Editor | Sentinel-1/OPERA monthly counts and temporal-resolution diagnostics for a supplied geometry. |
+| `GEE/Wildfire_detection.js` | GEE Code Editor | Sentinel-2 burned-area and fire-severity workflow with configurable image selection, masks, statistics, and exports. |
+| `Apps/List` | Web browser | Small, annotated catalog of useful external geospatial web applications. |
 
-### 2) Multi-sensor imagery exploration
-
-- **POI exploration** (`LanSenView.js`): inspect Sentinel-2/Landsat mosaics grouped by date, plus Sentinel-1 scene-level browsing.
-- Useful for rapid visual QA/QC, temporal checks, and first-pass site interpretation.
-
-### 3) Event-focused analysis
-
-- **Wildfire mapping** (`Wildfire_detection.js`): configurable pre/post windows, optional single-date or median composites, dNBR-based burned area, severity classes, optional admin-level statistics, and Drive exports.
-
-### 4) Export and scaling patterns
-
-- **Tile export template** (`ExportTile_scheleton.js`): choose grid/global AOI collections, run one export per tile, and keep naming/CRS/scale logic centralized.
-- **Sentinel-1 annual max prototype** (`maxS1Year.js`): compact pattern for building regional/yearly composites before adapting to production exports.
-
-### 5) Land-cover benchmarking
-
-- **AlphaEarth benchmark scripts** (`AlphaEarth_Benchmark_Mode*.js`): benchmark multiple AOIs (`caatinga`, `cerrado`, `chaco`, `tanzania`) and classifiers (`RF`, `CART`, `GTB`, `KNN`, `NB`, `SVM`, `MIN_DIST`) with configurable export targets.
-
-## How to use these scripts
+## Using a GEE JavaScript file
 
 1. Open the [Google Earth Engine Code Editor](https://code.earthengine.google.com/).
-2. Create or open a script, then paste one file from `GEE/`.
-3. Update all project-specific settings before running:
-   - asset IDs,
-   - AOI collections,
-   - export destination paths,
-   - date windows and thresholds (for analysis scripts).
-4. Run the script and review:
-   - map UI outputs (interactive tools),
-   - Console logs (diagnostics),
-   - Tasks tab (exports).
+2. Create a script and paste in the contents of the selected `.js` file.
+3. Read the header and user-settings section before running it.
+4. Replace any project-specific asset IDs, export paths, dates, thresholds, or
+   AOI definitions.
+5. Run the script and inspect the map, Console, and Tasks tab as applicable.
 
-## Important notes
+These files use the Code Editor's global `ee`, `Map`, `ui`, `Export`, and
+`print` objects. They are valid JavaScript, but they are not Node.js modules.
+Some scripts also expect a geometry drawn or imported in the Code Editor. For
+example, `GEE/S1_Opera_query.js` expects a variable named `geometry`.
 
-- Several scripts reference project/user assets (for example `projects/...` and `users/...`). Replace with assets you can access.
-- `ExportTile_scheleton.js` is intentionally a scaffold; insert your own processing chain in the placeholder section.
-- Benchmark reproducibility depends on keeping AOI/year/parameters/seed settings consistent across runs.
-- `Wildfire_detection.js` includes many tuning switches; validate thresholds on known events before operational use.
+## Using the EECU notebook
 
-## Source acknowledgement
+`GEE/GEE_noncommercial_eecu_monitor.ipynb` is designed for Google Colab. It
+uses:
 
-- `GEE_noncommercial_eecu_monitor.ipynb` source guide: <https://github.com/google/earthengine-community/blob/master/guides/linked/cloud-monitoring/earth_engine_noncommercial_eecu_monitor.ipynb>
+- `pandas`
+- `plotly`
+- `google-colab`
+- `google-cloud-monitoring`
+- `IPython`
 
-- Coauthor: begsud 
+Open the notebook in Colab, set `PROJECT_ID`, authenticate with an account that
+can view the project's Cloud Monitoring metrics, and then run the cells. Colab
+provides several of the imported packages by default; install any missing
+package in the notebook environment rather than treating it as a repository-wide
+dependency.
+
+## Developing the vault
+
+Start work from an up-to-date branch:
+
+```bash
+git switch main
+git pull --ff-only
+git switch -c feature/short-description
+```
+
+After making a change, run the repository checks:
+
+```bash
+python tools/validate_repository.py
+```
+
+The validator checks JavaScript syntax when Node.js is available, Python syntax,
+notebook JSON structure, and whether files in `GEE/` and `Apps/` are represented
+in this catalog. It does not execute Earth Engine operations; functional
+validation still happens in the relevant runtime.
+
+Then review and publish the branch:
+
+```bash
+git status
+git diff
+git add <files>
+git commit -m "Describe the change"
+git push -u origin feature/short-description
+```
+
+For a very small personal change, committing directly to `main` is possible,
+but a short-lived branch is safer for substantial script changes. See
+`CONTRIBUTING.md` for the repository conventions.
+
+## Repository conventions
+
+- Treat every script or notebook as an independent tool.
+- Keep user-editable configuration near the top of the file.
+- Document the expected runtime, inputs, outputs, external assets, and important
+  limitations in the file header.
+- Prefer meaningful filenames over a deep package hierarchy.
+- Use Git history for ordinary revisions. Keep a separate `_v2` file only when
+  both variants are intentionally useful.
+- Do not commit credentials, private keys, local datasets, generated exports, or
+  private Earth Engine asset details.
+- Validate scientific thresholds and classification results against known data
+  before operational use.
+
+## Known portability considerations
+
+- Several scripts use Earth Engine datasets or user/project assets. Access,
+  dataset schemas, and asset availability must be checked in the target Earth
+  Engine account.
+- `GEE/ExportTile_scheleton.js` contains deliberate placeholder asset paths and
+  requires a processing chain before use.
+- `GEE/S1_Opera_query.js` depends on an imported/drawn `geometry`.
+- The larger UI scripts are self-contained but have substantial client/server
+  interaction; a syntax check cannot detect Earth Engine runtime, quota, or UI
+  lifecycle errors.
+- `GEE/Wildfire_detection.js` exposes many methodological switches. Its
+  thresholds and outputs require event-specific validation.
+
+## Sources and licensing
+
+- The EECU monitor notebook is adapted from the
+  [Earth Engine Community guide](https://github.com/google/earthengine-community/blob/master/guides/linked/cloud-monitoring/earth_engine_noncommercial_eecu_monitor.ipynb)
+  and retains its source notices.
+- Some individual scripts contain their own author or license statement.
+- There is currently no repository-level `LICENSE` file. Do not assume that one
+  file's license statement automatically applies to every file in this mixed
+  collection.
+
+Coauthor: begsud
