@@ -1,0 +1,17 @@
+* text=auto eol=lf
+
+*.js text eol=lf
+*.py text eol=lf
+*.ipynb text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+*.gif binary
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.pdf binary
+*.tif binary
+*.tiff binary
+*.zip binary

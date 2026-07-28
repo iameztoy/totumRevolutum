@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+credentials*.json
+service-account*.json
+*service_account*.json
+application_default_credentials.json
+.ee_private_key.json
+
+# Generated or machine-local data
+outputs/
+data/local/
+tmp/
+temp/
+*.log
+*.aux.xml
+*.ovr
+
+# Editors and operating systems
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+Desktop.ini
