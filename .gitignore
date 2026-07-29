@@ -11,16 +11,28 @@ env/
 
 # Jupyter
 .ipynb_checkpoints/
+.virtual_documents/
+*.nbconvert.ipynb
 
 # Local configuration and credentials
 .env
 .env.*
 !.env.example
+.config/earthengine/
+.earthengine/
+earthengine/credentials
 credentials*.json
 service-account*.json
 *service_account*.json
 application_default_credentials.json
 .ee_private_key.json
+client_secret*.json
+oauth*.json
+token*.json
+secrets/
+*.key
+*.pem
+*.p12
 
 # Generated or machine-local data
 outputs/

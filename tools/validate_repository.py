@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -12,7 +13,33 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXCLUDED_PARTS = {".git", ".venv", "venv", "__pycache__", "outputs"}
+EXCLUDED_PARTS = {
+    ".git",
+    ".ipynb_checkpoints",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "outputs",
+}
+TEXT_SUFFIXES = {
+    ".ipynb",
+    ".js",
+    ".json",
+    ".md",
+    ".py",
+    ".txt",
+    ".yaml",
+    ".yml",
+}
+SECRET_PATTERNS = {
+    "Google API key": re.compile(r"AIza[0-9A-Za-z_-]{35}"),
+    "GitHub personal access token": re.compile(
+        r"(?:gh[opsu]_[0-9A-Za-z]{36,}|github_pat_[0-9A-Za-z_]{50,})"
+    ),
+    "private key block": re.compile(
+        r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"
+    ),
+}
 
 
 def repository_files(pattern: str) -> list[Path]:
@@ -90,13 +117,37 @@ def check_notebooks() -> tuple[int, list[str]]:
     return len(files), failures
 
 
+def check_high_confidence_secrets() -> tuple[int, list[str]]:
+    files = sorted(
+        path
+        for path in ROOT.rglob("*")
+        if path.is_file()
+        and path.suffix.lower() in TEXT_SUFFIXES
+        and not any(part in EXCLUDED_PARTS for part in path.parts)
+    )
+    failures: list[str] = []
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        for label, pattern in SECRET_PATTERNS.items():
+            if pattern.search(text):
+                failures.append(
+                    f"{path.relative_to(ROOT)}: possible {label}; "
+                    "remove it and rotate the credential before publishing"
+                )
+    return len(files), failures
+
+
 def check_catalog() -> tuple[int, list[str]]:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     cataloged_files = [
         path
-        for folder in ("GEE", "Apps")
+        for folder in ("GEE", "Apps", "JNotebooks")
         for path in sorted((ROOT / folder).rglob("*"))
         if path.is_file()
+        and not any(part in EXCLUDED_PARTS for part in path.parts)
     ]
     failures = [
         f"{path.relative_to(ROOT)} is not listed in README.md"
@@ -119,6 +170,7 @@ def main() -> int:
         ("JavaScript", lambda: check_javascript(args.node)),
         ("Python", check_python),
         ("notebooks", check_notebooks),
+        ("text files for high-confidence secrets", check_high_confidence_secrets),
         ("README catalog entries", check_catalog),
     ]
 

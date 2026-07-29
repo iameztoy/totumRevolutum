@@ -13,6 +13,8 @@ on its own so it can be copied into the appropriate environment when needed.
 - `GEE/` — scripts for the Earth Engine Code Editor and Earth Engine-related
   notebooks.
 - `Apps/` — a curated list of useful external geospatial applications.
+- `JNotebooks/` — portable Jupyter notebooks for ArcGIS Pro, VS Code, and
+  JupyterLab.
 - `tools/` — repository-level validation utilities; these do not form part of
   the geospatial scripts themselves.
 
@@ -33,6 +35,7 @@ on its own so it can be copied into the appropriate environment when needed.
 | `GEE/S1_Opera_query.js` | GEE Code Editor | Sentinel-1/OPERA monthly counts and temporal-resolution diagnostics for a supplied geometry. |
 | `GEE/Wildfire_detection.js` | GEE Code Editor | Sentinel-2 burned-area and fire-severity workflow with configurable image selection, masks, statistics, and exports. |
 | `Apps/List` | Web browser | Small, annotated catalog of useful external geospatial web applications. |
+| `JNotebooks/LandSenView_geemap.ipynb` | ArcGIS Pro / VS Code / JupyterLab | Interactive geemap explorer for querying point- or polygon-based Sentinel-2, Landsat, and Sentinel-1 imagery and displaying the LandSenView band combinations. |
 
 ## Using a GEE JavaScript file
 
@@ -64,6 +67,26 @@ can view the project's Cloud Monitoring metrics, and then run the cells. Colab
 provides several of the imported packages by default; install any missing
 package in the notebook environment rather than treating it as a repository-wide
 dependency.
+
+## Using the geemap imagery notebook
+
+Open `JNotebooks/LandSenView_geemap.ipynb` in ArcGIS Pro, VS Code, or JupyterLab
+and run the cells from top to bottom. In ArcGIS Pro, install missing packages in
+a clone of the default `arcgispro-py3` environment. The notebook includes a
+commented `%pip` command for other environments.
+
+Earth Engine authenticates through its browser-based OAuth flow and stores the
+resulting credentials outside the notebook. Do not paste tokens, API keys,
+service-account JSON, or private keys into notebook cells. Before committing
+notebook changes, clear outputs so account details, local paths, map state, and
+query results are not saved.
+
+For each selected UTC date, the notebook rebuilds the full filtered collection
+and mosaics every intersecting granule or scene. When it is run from inside the
+ArcGIS Pro application, an optional connection control can also add that Earth
+Engine mosaic to a chosen ArcGIS map or 3D scene. External VS Code or Jupyter
+kernels cannot alter a scene already open in ArcGIS Pro because they cannot use
+the application's `ArcGISProject("CURRENT")` context.
 
 ## Developing the vault
 
