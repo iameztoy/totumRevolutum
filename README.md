@@ -36,6 +36,7 @@ on its own so it can be copied into the appropriate environment when needed.
 | `GEE/Wildfire_detection.js` | GEE Code Editor | Sentinel-2 burned-area and fire-severity workflow with configurable image selection, masks, statistics, and exports. |
 | `Apps/List` | Web browser | Small, annotated catalog of useful external geospatial web applications. |
 | `JNotebooks/LandSenView_geemap.ipynb` | ArcGIS Pro / VS Code / JupyterLab | Interactive geemap explorer for querying point- or polygon-based Sentinel-2, Landsat, and Sentinel-1 imagery and displaying the LandSenView band combinations. |
+| `JNotebooks/Wildfire_detection_geemap.ipynb` | ArcGIS Pro / VS Code / JupyterLab | Sentinel-2 burned-area and fire-severity workflow with a geemap polygon AOI, consolidated settings, selective output catalogue, ArcGIS Scene transfer, statistics, and Drive export definitions. |
 
 ## Using a GEE JavaScript file
 
@@ -87,6 +88,30 @@ ArcGIS Pro application, an optional connection control can also add that Earth
 Engine mosaic to a chosen ArcGIS map or 3D scene. External VS Code or Jupyter
 kernels cannot alter a scene already open in ArcGIS Pro because they cannot use
 the application's `ArcGISProject("CURRENT")` context.
+
+## Using the burned-area geemap notebook
+
+Open `JNotebooks/Wildfire_detection_geemap.ipynb`, run the setup and import
+cells, and review the consolidated user-options cell before authenticating
+Earth Engine. The attached example polygon is available by default; draw a new
+polygon or rectangle in the geemap widget to replace it.
+
+Running the analysis creates an output catalogue without automatically adding
+result layers. Select the pre/post imagery, indices, correction masks, burned
+area, severity, or enabled threshold diagnostics that you want to inspect.
+Selected entries can be previewed in geemap or transferred to an existing
+ArcGIS Pro map/3D Scene from the dedicated transfer cell. The transfer does not
+open a new Scene view. Statistics are a later optional step and can be skipped
+without affecting visualization; raster exports remain available when
+statistics are skipped. Google Drive exports are defined separately and remain
+unsubmitted until explicitly started. A final optional validation section can
+download the burned mask as a projected binary GeoTIFF, polygonize it locally,
+save the polygon as a GeoPackage, and compare raster- and polygon-derived areas
+with a fresh Earth Engine `pixelArea()` calculation. That optional section uses
+`geedim`, `rasterio`, `GeoPandas`, `Shapely`, and `pyproj`; its commented setup
+cell provides the installation command for environments that lack them. Its
+output defaults to `Desktop/wildfire_local_validation`, and an editable folder
+field immediately before the download accepts any writable absolute path.
 
 ## Developing the vault
 
