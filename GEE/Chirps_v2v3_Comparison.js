@@ -21,6 +21,8 @@
  * - Monthly climatology
  * - Monthly v2-v3 scatter with linear fit / R²
  * - Summary metrics: bias, MAE, RMSE, correlation, PBIAS
+ * - Adaptive systematic spatial sampling with per-point metric table
+ * - Per-sample Bias, MAE, RMSE, PBIAS, r, R², NSE and KGE
  *
  * Important comparability safeguards
  * ----------------------------------
@@ -77,6 +79,19 @@ var COMMON_LAST_EXCLUSIVE = ee.Date(
 
 var NATIVE_SCALE = 5566;
 var TILE_SCALE = 4;
+
+// Systematic sampling is carried out on the global equal-area EASE-Grid 2.0
+// projection. The spacing is adapted to AOI size to approach the requested
+// number of samples, but is never finer than the native CHIRPS scale.
+var SAMPLE_PROJECTION = ee.Projection('EPSG:6933');
+
+var SAMPLE_TABLE_PROPERTIES = [
+  'lon', 'lat',
+  'selected_v2', 'selected_v3', 'selected_diff', 'selected_rel_diff_pct',
+  'mean_v2_mm_month', 'mean_v3_mm_month',
+  'bias_mm_month', 'mae_mm_month', 'rmse_mm_month',
+  'pbias_pct', 'pearson_r', 'r2', 'nse', 'kge'
+];
 
 var PRECIP_PALETTE = [
   'f7fbff', 'deebf7', 'c6dbef', '9ecae1',
@@ -235,6 +250,17 @@ function selectedScale() {
     '25 km (fastest)': 25000
   };
   return lookup[scaleSelect.getValue()] || NATIVE_SCALE;
+}
+
+
+function selectedSampleTarget() {
+  var lookup = {
+    '~250 points': 250,
+    '~500 points': 500,
+    '~1000 points (default)': 1000,
+    '~2000 points': 2000
+  };
+  return lookup[sampleTargetSelect.getValue()] || 1000;
 }
 
 function hydroBasins(level) {
@@ -490,6 +516,158 @@ function makeClimatology(monthlyFeatures) {
   }));
 }
 
+
+function makeSampleMetricImage(monthlyImages, statV2, statV3, diff, relDiff) {
+  // Ensure every monthly pair uses the same valid-pixel mask for v2 and v3.
+  var paired = monthlyImages.map(function(img) {
+    img = ee.Image(img);
+    var commonMask = img.select('v2').mask().and(img.select('v3').mask());
+    return img.select(['v2', 'v3']).updateMask(commonMask)
+      .copyProperties(img, ['system:time_start', 'year', 'month']);
+  });
+
+  var meanV2 = paired.select('v2').mean().rename('mean_v2_mm_month');
+  var meanV3 = paired.select('v3').mean().rename('mean_v3_mm_month');
+  var sdV2 = paired.select('v2').reduce(ee.Reducer.stdDev())
+    .rename('sd_v2_mm_month');
+  var sdV3 = paired.select('v3').reduce(ee.Reducer.stdDev())
+    .rename('sd_v3_mm_month');
+
+  var diffs = paired.map(function(img) {
+    img = ee.Image(img);
+    return img.select('v3').subtract(img.select('v2')).rename('d')
+      .copyProperties(img, ['system:time_start']);
+  });
+
+  var bias = diffs.mean().rename('bias_mm_month');
+  var mae = diffs.map(function(img) {
+    return ee.Image(img).abs().rename('abs_d');
+  }).mean().rename('mae_mm_month');
+  var sse = diffs.map(function(img) {
+    return ee.Image(img).pow(2).rename('sq_d');
+  }).sum().rename('sse');
+  var rmse = sse.divide(ee.Number(paired.size())).sqrt()
+    .rename('rmse_mm_month');
+
+  var sumV2 = paired.select('v2').sum();
+  var sumDiff = diffs.sum();
+  var pbias = sumDiff.divide(sumV2).multiply(100)
+    .updateMask(sumV2.abs().gt(1e-6))
+    .rename('pbias_pct');
+
+  // Multi-input reducer: output bands are correlation and p-value.
+  var corrResult = paired.select(['v2', 'v3'])
+    .reduce(ee.Reducer.pearsonsCorrelation());
+  var r = corrResult.select([0], ['pearson_r']);
+  var pValue = corrResult.select([1], ['pearson_p_value']);
+  var r2 = r.pow(2).rename('r2');
+
+  // NSE, using CHIRPS v2 as the reference series.
+  var sstV2 = paired.map(function(img) {
+    img = ee.Image(img);
+    return img.select('v2').subtract(meanV2).pow(2).rename('sq_dev_v2');
+  }).sum();
+  var nse = ee.Image.constant(1).subtract(sse.divide(sstV2))
+    .updateMask(sstV2.gt(1e-9))
+    .rename('nse');
+
+  // KGE (2009 formulation): r, variability ratio alpha, bias ratio beta.
+  var alpha = sdV3.divide(sdV2).updateMask(sdV2.gt(1e-9));
+  var beta = meanV3.divide(meanV2).updateMask(meanV2.abs().gt(1e-9));
+  var kge = ee.Image.constant(1).subtract(
+    r.subtract(1).pow(2)
+      .add(alpha.subtract(1).pow(2))
+      .add(beta.subtract(1).pow(2))
+      .sqrt()
+  ).rename('kge');
+
+  return statV2.rename('selected_v2')
+    .addBands(statV3.rename('selected_v3'))
+    .addBands(diff.rename('selected_diff'))
+    .addBands(relDiff.rename('selected_rel_diff_pct'))
+    .addBands(meanV2)
+    .addBands(meanV3)
+    .addBands(sdV2)
+    .addBands(sdV3)
+    .addBands(bias)
+    .addBands(mae)
+    .addBands(rmse)
+    .addBands(pbias)
+    .addBands(r)
+    .addBands(pValue)
+    .addBands(r2)
+    .addBands(nse)
+    .addBands(kge);
+}
+
+function makeSystematicSampleTable(
+  analysisAoi, monthlyImages, statV2, statV3, diff, relDiff
+) {
+  var target = selectedSampleTarget();
+  var areaM2 = analysisAoi.area(1000);
+
+  // For a square grid, sqrt(area / N) is the nominal spacing needed for ~N
+  // cells. Irregular boundaries mean the actual number will differ slightly.
+  var spacingM = areaM2.divide(target).sqrt().max(NATIVE_SCALE);
+
+  var metricImage = makeSampleMetricImage(
+    monthlyImages, statV2, statV3, diff, relDiff
+  );
+
+  // Image.sample() without factor/numPixels samples every pixel of the requested
+  // projection/scale. Using EPSG:6933 therefore produces a regular equal-area
+  // grid of sample centers instead of a random sample.
+  var samples = metricImage.sample({
+    region: analysisAoi,
+    projection: SAMPLE_PROJECTION,
+    scale: spacingM,
+    dropNulls: false,
+    tileScale: TILE_SCALE,
+    geometries: true
+  }).filter(ee.Filter.notNull([
+    'mean_v2_mm_month', 'mean_v3_mm_month',
+    'bias_mm_month', 'mae_mm_month', 'rmse_mm_month'
+  ])).map(function(f) {
+    f = ee.Feature(f);
+    var xy = ee.List(f.geometry().coordinates());
+    var lon = ee.Number(xy.get(0));
+    var lat = ee.Number(xy.get(1));
+    var id = ee.String('P_')
+      .cat(lat.format('%.4f')).cat('_').cat(lon.format('%.4f'));
+
+    return f.set({
+      sample_id: id,
+      lon: lon,
+      lat: lat,
+      spacing_km: spacingM.divide(1000),
+      target_samples: target,
+      n_months: monthlyImages.size()
+    });
+  });
+
+  return {
+    table: samples,
+    spacingM: spacingM,
+    target: target,
+    metricImage: metricImage
+  };
+}
+
+function samplingPointLayer(samples) {
+  return ui.Map.Layer(
+    ee.FeatureCollection(samples).style({
+      color: 'ff00ff',
+      fillColor: 'ff00ff',
+      pointSize: 3,
+      width: 1
+    }),
+    {},
+    'Systematic sample points',
+    true,
+    0.9
+  );
+}
+
 function makeLegend(title, min, max, palette) {
   var panel = ui.Panel({style: {margin: '4px 0 8px 0'}});
   panel.add(ui.Label(title, {fontSize: '11px', fontWeight: 'bold'}));
@@ -563,11 +741,16 @@ function updateRightMapDisplay() {
     analysisState.analysisAoi, 'ffff00', 2, 'Compared footprint'
   );
 
-  rightMap.layers().reset([
+  var rightLayers = [
     ui.Map.Layer(image, vis, display, true, 1),
     aoiFull,
     aoiCommon
-  ]);
+  ];
+  if (analysisState.sampleTable &&
+      (!showSamplesCheckbox || showSamplesCheckbox.getValue())) {
+    rightLayers.push(samplingPointLayer(analysisState.sampleTable));
+  }
+  rightMap.layers().reset(rightLayers);
   rightMapTitle.setValue(title);
 
   legendPanel.widgets().reset([
@@ -584,6 +767,31 @@ function updateRightMapDisplay() {
       vis.palette
     )
   ]);
+}
+
+
+function updateLeftMapDisplay() {
+  if (!analysisState) return;
+
+  var layers = [
+    ui.Map.Layer(
+      analysisState.v2,
+      analysisState.mainVis,
+      'CHIRPS v2',
+      true,
+      1
+    ),
+    outlineLayer(analysisState.fullAoi, 'ffffff', 2, 'Selected AOI'),
+    outlineLayer(analysisState.analysisAoi, 'ffff00', 2, 'Compared footprint')
+  ];
+
+  if (analysisState.sampleTable &&
+      (!showSamplesCheckbox || showSamplesCheckbox.getValue())) {
+    layers.push(samplingPointLayer(analysisState.sampleTable));
+  }
+
+  leftMap.layers().reset(layers);
+  leftMapTitle.setValue('CHIRPS v2 — ' + analysisState.statistic);
 }
 
 // -----------------------------------------------------------------------------
@@ -903,6 +1111,37 @@ sidebar.add(smallNote(
   'regional reductions used for charts and summary metrics.'
 ));
 
+sidebar.add(sectionTitle('4. Systematic sampling'));
+
+var sampleTargetSelect = ui.Select({
+  items: [
+    '~250 points',
+    '~500 points',
+    '~1000 points (default)',
+    '~2000 points'
+  ],
+  value: '~1000 points (default)',
+  style: {stretch: 'horizontal'}
+});
+sidebar.add(ui.Label('Target number of sample locations', {fontSize: '11px'}));
+sidebar.add(sampleTargetSelect);
+
+var showSamplesCheckbox = ui.Checkbox({
+  label: 'Show systematic sample points on maps',
+  value: true,
+  onChange: function() {
+    if (!analysisState) return;
+    updateLeftMapDisplay();
+    updateRightMapDisplay();
+  }
+});
+sidebar.add(showSamplesCheckbox);
+sidebar.add(smallNote(
+  'Sampling uses a regular equal-area grid (EPSG:6933). Grid spacing is ' +
+  'adapted to AOI size to approach the target count and is never finer than ' +
+  'the native CHIRPS resolution. This is systematic, not random, sampling.'
+));
+
 var runButton = ui.Button({
   label: 'RUN COMPARISON',
   style: {
@@ -930,7 +1169,7 @@ sidebar.add(smallNote(
 // 5. RESULTS PANELS
 // -----------------------------------------------------------------------------
 
-sidebar.add(sectionTitle('4. Summary'));
+sidebar.add(sectionTitle('5. Summary'));
 var summaryPanel = ui.Panel([
   smallNote('Run the comparison to calculate metrics.')
 ]);
@@ -939,13 +1178,19 @@ sidebar.add(summaryPanel);
 var legendPanel = ui.Panel();
 sidebar.add(legendPanel);
 
-sidebar.add(sectionTitle('5. Plots'));
+sidebar.add(sectionTitle('6. Systematic sample table'));
+var samplingPanel = ui.Panel([
+  smallNote('Run the comparison to build the systematic sample table.')
+]);
+sidebar.add(samplingPanel);
+
+sidebar.add(sectionTitle('7. Plots'));
 var chartPanel = ui.Panel([
   smallNote('Charts will appear after running the comparison.')
 ]);
 sidebar.add(chartPanel);
 
-sidebar.add(sectionTitle('6. Pixel inspector'));
+sidebar.add(sectionTitle('8. Pixel inspector'));
 var pixelPanel = ui.Panel([
   smallNote('After running the comparison, click either map to inspect a CHIRPS pixel.')
 ]);
@@ -1076,7 +1321,7 @@ rightMap.onClick(function(coords) {
 });
 
 // -----------------------------------------------------------------------------
-// 7. CORE ANALYSIS
+// 9. CORE ANALYSIS
 // -----------------------------------------------------------------------------
 
 function runComparison() {
@@ -1163,6 +1408,10 @@ function runComparison() {
         return ee.Image(img).pow(2).rename('sq');
       }).mean().sqrt().rename('value').clip(analysisAoi);
 
+      var systematic = makeSystematicSampleTable(
+        analysisAoi, monthlyImages, statV2, statV3, diff, relDiff
+      );
+
       var fixed = fixedVisForStatistic(statisticName, d);
       var mainVis = {
         min: 0,
@@ -1190,20 +1439,13 @@ function runComparison() {
         fullAoi: fullAoi,
         analysisAoi: analysisAoi,
         start: d.effectiveStart,
-        endExclusive: d.effectiveEndExclusive
+        endExclusive: d.effectiveEndExclusive,
+        sampleTable: systematic.table,
+        sampleSpacingM: systematic.spacingM,
+        sampleTarget: systematic.target
       };
 
-      var fullOutlineLeft = outlineLayer(fullAoi, 'ffffff', 2, 'Selected AOI');
-      var commonOutlineLeft = outlineLayer(
-        analysisAoi, 'ffff00', 2, 'Compared footprint'
-      );
-
-      leftMap.layers().reset([
-        ui.Map.Layer(statV2, mainVis, 'CHIRPS v2', true, 1),
-        fullOutlineLeft,
-        commonOutlineLeft
-      ]);
-      leftMapTitle.setValue('CHIRPS v2 — ' + statisticName);
+      updateLeftMapDisplay();
       updateRightMapDisplay();
 
       // Fit both maps to the selected AOI (the linker synchronizes them).
@@ -1311,6 +1553,123 @@ function runComparison() {
         scatterChart
       ]);
 
+      // Systematic spatial sample table. The Table chart is paginated and
+      // downloadable; it contains the full sample FeatureCollection.
+      var sampleTableChart = ui.Chart.feature.byFeature(
+        systematic.table,
+        'sample_id',
+        SAMPLE_TABLE_PROPERTIES
+      ).setSeriesNames([
+        'Longitude', 'Latitude',
+        'v2 selected (' + units + ')',
+        'v3 selected (' + units + ')',
+        'v3-v2 selected (' + units + ')',
+        'Selected relative difference (%)',
+        'Mean v2 (mm/month)', 'Mean v3 (mm/month)',
+        'Bias (mm/month)', 'MAE (mm/month)', 'RMSE (mm/month)',
+        'PBIAS (%)', 'Pearson r', 'R²', 'NSE', 'KGE'
+      ]).setChartType('Table').setOptions({
+        allowHtml: true,
+        showRowNumber: false,
+        page: 'enable',
+        pageSize: 20,
+        sort: 'enable',
+        width: '100%',
+        height: '420px'
+      });
+
+      var pbiasHistogram = ui.Chart.feature.histogram(
+        systematic.table, 'pbias_pct', 30
+      ).setOptions({
+        title: 'Spatial distribution of sample PBIAS',
+        hAxis: {title: 'PBIAS (%)'},
+        vAxis: {title: 'Number of sample points'},
+        legend: {position: 'none'}
+      });
+
+      var rmseHistogram = ui.Chart.feature.histogram(
+        systematic.table, 'rmse_mm_month', 30
+      ).setOptions({
+        title: 'Spatial distribution of sample RMSE',
+        hAxis: {title: 'RMSE (mm/month)'},
+        vAxis: {title: 'Number of sample points'},
+        legend: {position: 'none'}
+      });
+
+      var exportSampleButton = ui.Button({
+        label: 'Create full sample-table CSV export task',
+        style: {stretch: 'horizontal'},
+        onClick: function() {
+          if (!analysisState || !analysisState.sampleTable) {
+            setStatus('Run the comparison first.', 'a33a2b');
+            return;
+          }
+          if (typeof Export === 'undefined' || !Export.table) {
+            setStatus(
+              'Drive export tasks are available in the Earth Engine Code Editor. ' +
+              'You can still use the table chart download control.',
+              'a33a2b'
+            );
+            return;
+          }
+          Export.table.toDrive({
+            collection: analysisState.sampleTable,
+            description: 'CHIRPS_v2_v3_systematic_sample_metrics',
+            fileNamePrefix: 'CHIRPS_v2_v3_systematic_sample_metrics',
+            fileFormat: 'CSV',
+            selectors: [
+              'sample_id', 'lon', 'lat', 'spacing_km', 'target_samples', 'n_months',
+              'selected_v2', 'selected_v3', 'selected_diff',
+              'selected_rel_diff_pct',
+              'mean_v2_mm_month', 'mean_v3_mm_month',
+              'sd_v2_mm_month', 'sd_v3_mm_month',
+              'bias_mm_month', 'mae_mm_month', 'rmse_mm_month',
+              'pbias_pct', 'pearson_r', 'pearson_p_value', 'r2', 'nse', 'kge'
+            ]
+          });
+          setStatus(
+            'CSV export task created. Open the Tasks tab and click RUN.',
+            '2b6f3e'
+          );
+        }
+      });
+
+      var sampleInfoLabel = smallNote('Calculating systematic sample count…');
+      samplingPanel.widgets().reset([
+        sampleInfoLabel,
+        sampleTableChart,
+        exportSampleButton,
+        pbiasHistogram,
+        rmseHistogram,
+        smallNote(
+          'Metric definitions: Bias = mean(v3-v2); MAE = mean absolute monthly ' +
+          'difference; RMSE gives extra weight to large monthly errors; PBIAS is ' +
+          'the cumulative percentage bias relative to v2; r/R² describe temporal ' +
+          'agreement; NSE and KGE use v2 as the reference. The first four value ' +
+          'columns use the currently selected map statistic.'
+        )
+      ]);
+
+      ee.Dictionary({
+        nSamples: systematic.table.size(),
+        spacingKm: systematic.spacingM.divide(1000),
+        target: systematic.target
+      }).evaluate(function(info, sampleErr) {
+        if (sampleErr || !info) {
+          sampleInfoLabel.setValue(
+            'Sample table created, but sample count/spacing could not be evaluated.'
+          );
+          return;
+        }
+        sampleInfoLabel.setValue(
+          'Systematic equal-area grid: target ≈ ' + info.target +
+          ' points; actual valid points = ' + info.nSamples +
+          '; grid spacing ≈ ' + formatNumber(info.spacingKm, 1) + ' km. ' +
+          'Actual count differs from the target because the AOI boundary is irregular ' +
+          'and spacing is not allowed below the native CHIRPS scale.'
+        );
+      });
+
       // Summary metrics.
       var selectedPair = statV2.rename('v2').addBands(statV3.rename('v3'));
       var selectedMeans = areaWeightedPair(selectedPair, analysisAoi, scale);
@@ -1393,6 +1752,10 @@ function runComparison() {
             ' km² (' + formatNumber(s.coveragePct, 1) + '%)'
           ),
           ui.Label(
+            'Systematic sampling target: ≈' + systematic.target +
+            ' locations (see sample-table section for actual count and spacing).'
+          ),
+          ui.Label(
             statisticName + ' — AOI area-weighted mean:',
             {fontWeight: 'bold', margin: '6px 0 0 0'}
           ),
@@ -1434,7 +1797,7 @@ function runComparison() {
 runButton.onClick(runComparison);
 
 // -----------------------------------------------------------------------------
-// 8. INITIAL DRAW MODE
+// 10. INITIAL DRAW MODE
 // -----------------------------------------------------------------------------
 
 setStatus(
