@@ -23,6 +23,8 @@ on its own so it can be copied into the appropriate environment when needed.
 | File | Environment | Purpose |
 | --- | --- | --- |
 | `GEE/AreaCalculator_Widget.js` | GEE Code Editor | Interactive drawing tool that reports polygon area in m², ha, and km². |
+| `GEE/CHIRPS_v2_v3_comparison_v2.js` | GEE Code Editor | Africa CHIRPS v2/v3 explorer: linked maps, area-weighted regional/elevation comparisons and annual point histories, 1981–2025. Requires a prepared annual image. |
+| `GEE/CHIRPS_Tanganyika_Explorer.js` | GEE Code Editor | Tanganyika basin CHIRPS v2/v3 explorer: exact polygon-area weights, land/lake and elevation comparisons, annual/monthly charts and point inspection. Requires three prepared assets. |
 | `GEE/DW_water_retrieval.js` | GEE Code Editor | Dynamic World water/inundated-vegetation viewer and exporter, including batch and SWOT-date-window workflows. |
 | `GEE/ExportTile_scheleton.js` | GEE Code Editor | Reusable scaffold for tile- or AOI-based Earth Engine asset exports. |
 | `GEE/GEE_noncommercial_eecu_monitor.ipynb` | Google Colab | Cloud Monitoring notebook for reviewing noncommercial Earth Engine EECU consumption. |
@@ -51,6 +53,107 @@ These files use the Code Editor's global `ee`, `Map`, `ui`, `Export`, and
 `print` objects. They are valid JavaScript, but they are not Node.js modules.
 Some scripts also expect a geometry drawn or imported in the Code Editor. For
 example, `GEE/S1_Opera_query.js` expects a variable named `geometry`.
+
+## CHIRPS v2/v3 comparison apps
+
+The [Africa explorer](GEE/CHIRPS_v2_v3_comparison_v2.js) and
+[Tanganyika explorer](GEE/CHIRPS_Tanganyika_Explorer.js) are standalone Code
+Editor scripts. Copy the complete file, configure the asset paths near the top,
+then run it. Source publication on GitHub is separate from hosting an Earth
+Engine App. Running these explorers does not create assets, start exports or
+change sharing permissions.
+
+Only the JavaScript sources are included here. The local HTML application,
+embedded basin data, shapefiles, rainfall exports, credentials and original
+private asset identifiers are not included in this addition. Asset paths use
+`projects/your-project/assets/...` placeholders. Replace them with accessible
+images/tables in an enabled Earth Engine project; GitHub access does not grant
+Earth Engine access.
+
+### Required assets
+
+| Configuration | Required input |
+| --- | --- |
+| Both apps: `CONFIG.preparedAsset` | Native-grid annual image with `v2_1981`/`v3_1981` through `v2_2025`/`v3_2025`, plus `elev_m`, `region_id`, `area_m2` and `fixed_support`. |
+| Tanganyika: `CONFIG.supportAsset` | Basin image containing exact polygon-cell overlap areas, monthly climatology and full-record monthly diagnostics. |
+| Tanganyika: `CONFIG.boundaryAsset` | Eight features: five supplied polygons and three derived land polygons, identified by the expected `key` properties. |
+
+The annual image is prepared from `UCSB-CHG/CHIRPS/PENTAD`,
+`UCSB-CHC/CHIRPS/V3/PENTAD`, `MERIT/DEM/v1_0_3` and
+`USDOS/LSIB_SIMPLE/2017`. The Africa source includes the public-data preparation
+functions (`createContext`, `catalogMetadata`, `preparedImage`) for review;
+preparation and asset sharing are separate actions. Clearing `preparedAsset`
+and `terrainAsset` uses the public catalog directly, but continental map tiles
+can exceed interactive computation limits. A prepared image is recommended.
+
+The Tanganyika support image uses schema `chirps-tanganyika-explorer-v1` and
+the exact weight-file checksum in `CONFIG.weightsSHA256`. Required bands include
+`unit_1_area_m2` through `unit_5_area_m2`, `catchment_1_area_m2` through
+`catchment_3_area_m2`, `cell_area_equal_m2`, `centre_unit`, the 24
+`v2_m01_mm`/`v3_m01_mm` through `v2_m12_mm`/`v3_m12_mm` climatology bands,
+`monthly_anomaly_r`, `monthly_anomaly_sd_ratio` and `valid_months` (540).
+Additional diagnostic bands may be present. Required boundary keys are
+`source_rusizi`, `source_malagarasi`, `source_others`, `land_rusizi`,
+`land_malagarasi`, `land_others`, `lake_tanganyika` and `lake_kivu`.
+The startup functions check schema, source IDs, dates, required bands, native
+grid and polygon keys. Arbitrary replacement datasets will not reproduce the
+study; the original basin weights and polygons are required.
+
+### Methods and interpretation
+
+- Both apps retain **1981–2025**, the original CHIRPS v2 grid and fixed complete
+  paired coverage. Annual totals give every year equal weight. The scripts show
+  the exact affine transform rather than substituting a rounded 5 km scale.
+- A group mean is `sum(rainfall × represented area) / sum(represented area)`.
+  Africa uses native-grid Earth Engine pixel areas. Tanganyika uses the exact
+  EPSG:6933 polygon-cell intersection areas from the basin analysis, preserving
+  partial boundary cells. Already weighted values are summed without a second
+  polygon-edge weighting.
+- Differences are **v3 − v2**. A group percentage divides the difference of
+  group means by the v2 group mean; it is not an average of pixel percentages.
+  The dry-cell threshold applies to the percentage map, not group totals.
+- Tanganyika offers the whole basin, land, lakes, five non-overlapping units
+  and the original catchments. The original lake polygons overlap the
+  catchments, so their five totals must not be added together. Elevation
+  comparisons exclude the two supplied lake polygons.
+- Mean MERIT elevation assigns rainfall cells to the same seven classes in
+  both apps. Lake comparisons are conditional CHIRPS product comparisons;
+  CHIRPS is a land precipitation product. Rainfall volume is not discharge.
+- Tanganyika monthly climatology and anomaly diagnostics always use the fixed
+  **1981–2025** period even when annual years change. The interface labels this.
+- Neither app performs gauge validation, uncertainty resampling or a causal
+  elevation analysis. A larger amount or stronger variability does not prove
+  greater accuracy.
+
+### Verification and provenance
+
+The original study exports were retrieved on **12 October 2026**. The original
+Africa annual cache was prepared on **15 October 2026**. Its calculations were
+checked against direct pentad expressions, regional/elevation summaries and
+independent raster samples. Fresh continental boundary rasterization differed
+at three coastal cells; comparisons with the original report allow 0.02 mm/year
+or percentage points and 100 km² in grouped summaries. The original report
+inputs were retained unchanged.
+
+For Tanganyika, all **750,510 annual values** (90 bands × 8,339 cells) from the
+shared annual cache matched the archived basin exports exactly. The basin uses
+its saved exact overlap areas rather than the parent's whole-cell area band.
+Eleven shared functions are reused verbatim from the Africa explorer. The
+publication copies preserve all named calculation/UI functions; only headers
+and account-specific cache configuration were adapted for this repository.
+
+The completed Tanganyika supplemental image was read back at all **350,238
+values** (42 bands × 8,339 cells), with exact equality to the saved inputs.
+All **396 live calculation checks** passed against unchanged report tables and
+point samples, including polygon/elevation summaries and annual/monthly history.
+The native-grid indexing was verified before export and after read-back. These
+assets remain private; publication here does not change their permissions.
+
+The original source packages passed nine Africa and six Tanganyika arithmetic,
+grid, completeness and code-generation tests. JavaScript syntax and repository
+catalog checks also run for this publication. These checks do not substitute
+for exercising the Code Editor UI with accessible assets. A public repository
+does not imply that the private inputs have been made public.
 
 ## Using the EECU notebook
 
