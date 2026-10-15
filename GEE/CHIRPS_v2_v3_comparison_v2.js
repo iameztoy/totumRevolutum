@@ -1,8 +1,8 @@
 /* CHIRPS v2 / v3 Africa explorer — 1981–2025.
  * Runtime: Google Earth Engine Code Editor (ee, ui, Map and print globals).
- * Launch: paste this entire file into the Code Editor and click Run. Enter
- * the asset project ID in the sidebar and click Connect / retry. Alternatively
- * set CONFIG.preparedAsset to an accessible prepared annual image.
+ * Launch: paste this entire file into the Code Editor and click Run.
+ * Existing study assets connect automatically. To switch projects, edit
+ * the sidebar field and click Connect / retry; edit CONFIG for other paths.
  * Configuration: asset IDs, dates, grid, regions and palettes are below.
  * Required image: 90 annual rainfall bands, MERIT elevation, region, pixel
  * area and fixed paired support; see the repository README for its contract.
@@ -26,10 +26,11 @@ var CONFIG = {
   bounds: [-26, -36, 64, 39],
   tileScale: 4,
   maxPixels: 100000000,
-  // Created with the supplied preparation logic. Empty = slow public-catalog calculation.
-  preparedAsset: 'projects/your-project/assets/chirps_africa_annual_1981_2025_20261015',
+  // Existing study asset: used automatically on Run. Edit to use another prepared image.
+  // Empty = slow public-catalog calculation.
+  preparedAsset: 'projects/hardy-tenure-383607/assets/chirps_africa_annual_1981_2025_20261015',
   // Used only when preparedAsset is empty. Preparation code is supplied for both caches.
-  terrainAsset: '', // Optional; not used with the annual cache.
+  terrainAsset: 'projects/hardy-tenure-383607/assets/chirps_africa_terrain_005deg_20261015',
   schema: 'chirps-africa-explorer-v1',
   sourceDate: '2026-10-12',
   extraIslands: ['Mauritius', 'Seychelles', 'Reunion', 'Saint Helena'],
@@ -416,7 +417,7 @@ var projectInput = ui.Textbox({placeholder: 'Project ID containing the prepared 
 var connectButton = ui.Button({label: 'Connect / retry', onClick: connectAssets,
   style: {stretch: 'horizontal'}});
 sidebar.add(projectInput).add(connectButton);
-sidebar.add(label('Enter the project that stores the study assets. This does not change your signed-in account or grant access. For custom asset names, edit CONFIG above.'));
+sidebar.add(label('The configured study assets connect automatically on Run. To use another project, change the field and click Connect / retry. For different asset names, edit CONFIG above. Asset access uses your signed-in account.'));
 sidebar.add(label('After connection, map tiles load separately. Choose years/area, press Apply selection once, then allow the maps to draw. Calculations run only when requested.'));
 
 sidebar.add(heading('1. Choose the comparison'));
