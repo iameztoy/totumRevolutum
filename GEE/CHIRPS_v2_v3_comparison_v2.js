@@ -697,6 +697,8 @@ function connectAssets() {
       }
       try {
         checkCatalogMetadata(metadata, true);
+        // Set both maps after startup; initial map creation can restore a default view.
+        [leftMap, rightMap].forEach(function(map) { map.setCenter(18, 2, 3); });
         state.ready = true; setBusy(false); applySelection();
         print('Study inputs and native grid verified; prepared mode checks the frozen cache, live mode checks the public archive.', metadata);
       } catch (e) { failed('Startup check failed: ' + e.message + '\nCorrect the inputs and click Connect / retry.'); }

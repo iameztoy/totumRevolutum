@@ -58,17 +58,38 @@ example, `GEE/S1_Opera_query.js` expects a variable named `geometry`.
 
 The [Africa explorer](GEE/CHIRPS_v2_v3_comparison_v2.js) and
 [Tanganyika explorer](GEE/CHIRPS_Tanganyika_Explorer.js) are standalone Code
-Editor scripts. Copy the complete file, configure the asset paths near the top,
-then run it. Source publication on GitHub is separate from hosting an Earth
+Editor scripts. Copy the complete file into the Code Editor and click **Run**.
+Enter the project ID containing the prepared study assets in **Connect to the
+study assets**, then click **Connect / retry**. Source publication on GitHub is separate from hosting an Earth
 Engine App. Running these explorers does not create assets, start exports or
 change sharing permissions.
 
 Only the JavaScript sources are included here. The local HTML application,
 embedded basin data, shapefiles, rainfall exports, credentials and original
 private asset identifiers are not included in this addition. Asset paths use
-`projects/your-project/assets/...` placeholders. Replace them with accessible
-images/tables in an enabled Earth Engine project; GitHub access does not grant
-Earth Engine access.
+`projects/your-project/assets/...` placeholders. The connection field replaces
+the project prefix while retaining the study's asset names. Enter a project ID,
+not a full asset path. For different asset names or assets in multiple projects,
+edit the paths in `CONFIG` and leave the connection field blank. The project
+must already contain accessible images/tables; GitHub access does not grant
+Earth Engine access or create those assets.
+
+### Loading and recovery
+
+- A placeholder is detected before any server request. A missing or inaccessible
+  asset needs a corrected project/path or the appropriate signed-in account;
+  waiting will not repair it. Correct the input and click **Connect / retry**.
+- Dropdowns remain usable while connecting or calculating. Calculation buttons
+  become available after the asset checks pass. After changing years, area or
+  elevation, click **Apply selection** once to apply those choices.
+- Map tiles and charts load separately, on demand. Allow the requested view to
+  finish rather than repeatedly pressing Run. A displayed calculation result
+  remains labelled with the selection used to produce it.
+- Africa's prepared mode checks the saved asset's schema, sources, dates, grid
+  and bands without reading all 6,480 source timestamps at startup. The full
+  archive check remains available for preparation and direct-catalog auditing.
+- Reconnection discards obsolete callbacks, clears old results and restores the
+  study's map extent. Neither app changes the original scientific calculations.
 
 ### Required assets
 

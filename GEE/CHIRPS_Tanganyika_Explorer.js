@@ -630,6 +630,8 @@ function connectAssets() {
       }
       try {
         checkCatalogMetadata(metadata, true);
+        // Set both maps after startup; initial map creation can restore a default view.
+        [leftMap, rightMap].forEach(function(map) { map.setCenter(31.2, -5.5, 6); });
         state.ready = true; setBusy(false); applySelection();
         print('Basin assets and native grids verified.', metadata);
       } catch (e) { failed('Startup check failed: ' + e.message + '\nCorrect the inputs and click Connect / retry.'); }
