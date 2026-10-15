@@ -1,7 +1,17 @@
-/* CHIRPS v2 / v3 Africa explorer — configuration, 15 October 2026.
- * Paste the complete generated CHIRPS_Africa_Explorer.js into the GEE Code Editor.
- * Public sources are saved in a reproducible private annual cache for responsive maps.
- * No credentials, private script imports or gauge records are used.
+/* CHIRPS v2 / v3 Africa explorer — 1981–2025.
+ * Runtime: Google Earth Engine Code Editor (ee, ui, Map and print globals).
+ * Launch: set CONFIG.preparedAsset to an accessible prepared annual image,
+ * paste this entire file into a Code Editor script, and click Run.
+ * Configuration: asset IDs, dates, grid, regions and palettes are below.
+ * Required image: 90 annual rainfall bands, MERIT elevation, region, pixel
+ * area and fixed paired support; see the repository README for its contract.
+ * An enabled Earth Engine account/project and access to that image are needed.
+ * Outputs: linked maps, area-weighted summaries/charts and point inspection.
+ * Running this explorer does not create assets, start exports or change sharing.
+ * Sources: UCSB CHIRPS v2/v3 final pentads, MERIT DEM and USDOS LSIB (IDs below).
+ * Differences between products are not independent accuracy validation.
+ * Snapshot: report inputs 12 Oct 2026; original annual cache 15 Oct 2026.
+ * Source code publication does not grant access to the original private assets.
  */
 var CONFIG = {
   firstYear: 1981,
@@ -16,9 +26,9 @@ var CONFIG = {
   tileScale: 4,
   maxPixels: 100000000,
   // Created with the supplied preparation logic. Empty = slow public-catalog calculation.
-  preparedAsset: 'projects/hardy-tenure-383607/assets/chirps_africa_annual_1981_2025_20261015',
-  // Used only when preparedAsset is empty. Preparation code is supplied for both caches.
-  terrainAsset: 'projects/hardy-tenure-383607/assets/chirps_africa_terrain_005deg_20261015',
+  preparedAsset: 'projects/your-project/assets/chirps_africa_annual_1981_2025_20261015',
+  // Optional terrain-only cache, used only when preparedAsset is empty.
+  terrainAsset: '', // Optional terrain-only cache; not needed with preparedAsset.
   schema: 'chirps-africa-explorer-v1',
   sourceDate: '2026-10-12',
   extraIslands: ['Mauritius', 'Seychelles', 'Reunion', 'Saint Helena'],
