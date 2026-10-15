@@ -1,7 +1,8 @@
 /* CHIRPS v2 / v3 Africa explorer — 1981–2025.
  * Runtime: Google Earth Engine Code Editor (ee, ui, Map and print globals).
- * Launch: set CONFIG.preparedAsset to an accessible prepared annual image,
- * paste this entire file into a Code Editor script, and click Run.
+ * Launch: paste this entire file into the Code Editor and click Run. Enter
+ * the asset project ID in the sidebar and click Connect / retry. Alternatively
+ * set CONFIG.preparedAsset to an accessible prepared annual image.
  * Configuration: asset IDs, dates, grid, regions and palettes are below.
  * Required image: 90 annual rainfall bands, MERIT elevation, region, pixel
  * area and fixed paired support; see the repository README for its contract.
@@ -27,8 +28,8 @@ var CONFIG = {
   maxPixels: 100000000,
   // Created with the supplied preparation logic. Empty = slow public-catalog calculation.
   preparedAsset: 'projects/your-project/assets/chirps_africa_annual_1981_2025_20261015',
-  // Optional terrain-only cache, used only when preparedAsset is empty.
-  terrainAsset: '', // Optional terrain-only cache; not needed with preparedAsset.
+  // Used only when preparedAsset is empty. Preparation code is supplied for both caches.
+  terrainAsset: '', // Optional; not used with the annual cache.
   schema: 'chirps-africa-explorer-v1',
   sourceDate: '2026-10-12',
   extraIslands: ['Mauritius', 'Seychelles', 'Reunion', 'Saint Helena'],
@@ -298,8 +299,8 @@ function pointHistory(ctx, longitude, latitude) {
 }
 
 /** Archive metadata checked BEFORE displaying live calculations. */
-function catalogMetadata(ctx) {
-  var result = ee.Dictionary({dates2: ctx.c2.aggregate_array('system:time_start'),
+function catalogMetadata(ctx, preparedOnly) {
+  var result = preparedOnly && ctx.prepared ? ee.Dictionary({}) : ee.Dictionary({dates2: ctx.c2.aggregate_array('system:time_start'),
     dates3: ctx.c3.aggregate_array('system:time_start'),
     projection2: ctx.c2.first().projection(), projection3: ctx.c3.first().projection(),
     countries: ctx.countries.aggregate_array('country_na')});
@@ -311,7 +312,9 @@ function catalogMetadata(ctx) {
 }
 
 /** Check exact expected timestamps, not just a possibly misleading image count. */
-function checkCatalogMetadata(metadata) {
+function checkCatalogMetadata(metadata, preparedOnly) {
+  // A frozen cache is audited independently of later live-catalog revisions.
+  if (!preparedOnly || !CONFIG.preparedAsset) {
   var expected = [];
   for (var year = CONFIG.firstYear; year <= CONFIG.lastYear; year++) {
     for (var month = 0; month < 12; month++) {
@@ -332,6 +335,7 @@ function checkCatalogMetadata(metadata) {
   metadata.countries.forEach(function(name) {
     if (all.indexOf(name) < 0) throw new Error('Unassigned country/territory: ' + name);
   });
+  }
   if (CONFIG.preparedAsset) {
     var props = metadata.preparedProperties || {};
     if (props.explorer_schema !== CONFIG.schema || props.first_year !== CONFIG.firstYear ||
@@ -357,7 +361,7 @@ function checkCatalogMetadata(metadata) {
 /* INTERFACE — all calculations are in the preceding analysis section.
  * No exports, uploads, asset writes or publication occur when this app runs.
  */
-var ctx = createContext();
+var ctx = null;
 var state = {first: 1981, last: 2025, region: 'Africa', elevation: null,
   threshold: 100, revision: 0, ready: false, busy: false, point: null, image: null};
 var INK = '#163641';
@@ -394,7 +398,27 @@ leftMap.setCenter(18, 2, 3);
 
 var yearStrings = [];
 for (var year = CONFIG.firstYear; year <= CONFIG.lastYear; year++) yearStrings.push(String(year));
-function dirty() { if (state.ready) status.setValue('Selection changed. Press Apply selection.'); }
+function dirty() { if (state.ready && !state.busy) status.setValue('Selection changed. Press Apply selection.'); }
+
+sidebar.add(heading('Connect to the study assets'));
+var assetFields = ['preparedAsset', 'terrainAsset'];
+var assetTemplates = {};
+assetFields.forEach(function(key) { assetTemplates[key] = CONFIG[key]; });
+var configuredProjects = assetFields.filter(function(key) { return CONFIG[key]; }).map(function(key) {
+  var match = CONFIG[key].match(/^projects\/([^/]+)\/assets\//);
+  return match ? match[1] : '';
+});
+var initialProject = configuredProjects.length && configuredProjects.every(function(p) {
+  return p === configuredProjects[0] && p !== 'your-project';
+}) ? configuredProjects[0] : '';
+var projectInput = ui.Textbox({placeholder: 'Project ID containing the prepared assets',
+  value: initialProject, style: {stretch: 'horizontal'}});
+var connectButton = ui.Button({label: 'Connect / retry', onClick: connectAssets,
+  style: {stretch: 'horizontal'}});
+sidebar.add(projectInput).add(connectButton);
+sidebar.add(label('Enter the project that stores the study assets. This does not change your signed-in account or grant access. For custom asset names, edit CONFIG above.'));
+sidebar.add(label('After connection, map tiles load separately. Choose years/area, press Apply selection once, then allow the maps to draw. Calculations run only when requested.'));
+
 sidebar.add(heading('1. Choose the comparison'));
 sidebar.add(label('Start year / end year (inclusive)'));
 var firstSelect = ui.Select({items: yearStrings, value: '1981', onChange: dirty, style: {width: '170px'}});
@@ -465,7 +489,7 @@ function applySelection() {
   resultsPanel.clear(); pointPanel.clear().add(label('Click a map to inspect a rainfall cell.'));
   selectionLabel.setValue(first + '–' + last + ' | ' + state.region + ' | ' + elevationSelect.getValue());
   renderMaps();
-  status.setValue('Maps requested. Choose a calculation or click a cell.');
+  status.setValue('Connected. Map tiles are loading separately; allow them to draw. Choose a calculation or click a cell.');
 }
 
 function layerSpec(name) {
@@ -521,7 +545,7 @@ function setBusy(busy) {
   [applyButton, summaryButton, regionButton, elevationButton].forEach(function(button) {
     button.setDisabled(busy || !state.ready);
   });
-  historyButton.setDisabled(busy || !state.point);
+  historyButton.setDisabled(busy || !state.ready || !state.point);
 }
 
 /** One expensive request at a time; stale responses never replace newer results. */
@@ -529,8 +553,8 @@ function request(object, message, callback) {
   var revision = state.revision;
   setBusy(true); status.setValue(message);
   object.evaluate(function(value, error) {
-    setBusy(false);
     if (revision !== state.revision) return;
+    setBusy(false);
     if (error) {
       status.setValue('Earth Engine request failed: ' + error +
         (CONFIG.preparedAsset ? '\nRetry the calculation. If access is denied, check the prepared asset permissions.' :
@@ -623,12 +647,61 @@ function showPointHistory() {
   });
 }
 
-catalogMetadata(ctx).evaluate(function(metadata, error) {
-  if (error) { status.setValue('Startup check failed: ' + error +
-    '\nCheck your Earth Engine project and access to the prepared asset. See the supplied README for another account.'); return; }
+
+/** Validate locally; a placeholder must never trigger a server request. */
+function configureAssets(project) {
+  project = String(project || '').trim();
+  if (project && (!/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(project) || project === 'your-project')) {
+    throw new Error('Enter a real Google Cloud project ID, not a full asset path or your-project.');
+  }
+  var resolved = {};
+  assetFields.forEach(function(key) {
+    var path = assetTemplates[key];
+    if (project && path) {
+      if (!/^projects\/[^/]+\/assets\//.test(path)) {
+        throw new Error('For legacy or custom assets, leave the project field blank and set CONFIG.' + key + ' directly.');
+      }
+      path = path.replace(/^projects\/[^/]+\/assets\//, 'projects/' + project + '/assets/');
+    }
+    if (path && /your-project|your_asset|YOUR_PROJECT/.test(path)) {
+      throw new Error('Setup needed: enter the project containing the prepared study assets, then click Connect / retry. Waiting will not resolve a placeholder path.');
+    }
+    // Empty annual cache retains the explicit live-catalog mode.
+    resolved[key] = path;
+  });
+  assetFields.forEach(function(key) { CONFIG[key] = resolved[key]; });
+}
+
+/** Reconnect without rerunning the script; invalidate responses from older requests. */
+function connectAssets() {
+  state.revision++;
+  var revision = state.revision;
+  state.ready = false; state.point = null; state.image = null; ctx = null;
+  setBusy(false);
+  resultsPanel.clear(); pointPanel.clear(); selectionLabel.setValue('');
+  [leftMap, rightMap].forEach(function(map) { map.layers().reset([]); });
+  leftLegend.clear(); rightLegend.clear();
+  function failed(message) {
+    state.ready = false; state.image = null; setBusy(false);
+    status.setValue(message);
+  }
   try {
-    checkCatalogMetadata(metadata); state.ready = true; setBusy(false); applySelection();
-    print('Archive and grid checks passed: 3240 paired final pentads per version.', metadata);
-    print('Area weighting: sum(rainfall * pixelArea) / sum(pixelArea). Native transform:', CONFIG.transform);
-  } catch (e) { status.setValue('Stopped: ' + e.message); }
-});
+    configureAssets(projectInput.getValue());
+    ctx = createContext();
+    status.setValue('Checking access, bands and grids… You can choose options while this runs.');
+    catalogMetadata(ctx, true).evaluate(function(metadata, error) {
+      if (revision !== state.revision) return;
+      if (error) {
+        failed('Connection failed: ' + error + '\nCheck the asset project and signed-in account, then click Connect / retry. Waiting alone will not fix a missing asset or denied access.');
+        return;
+      }
+      try {
+        checkCatalogMetadata(metadata, true);
+        state.ready = true; setBusy(false); applySelection();
+        print('Study inputs and native grid verified; prepared mode checks the frozen cache, live mode checks the public archive.', metadata);
+      } catch (e) { failed('Startup check failed: ' + e.message + '\nCorrect the inputs and click Connect / retry.'); }
+    });
+  } catch (e) { failed(e.message); }
+}
+
+connectAssets();
