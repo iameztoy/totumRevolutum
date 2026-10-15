@@ -1,7 +1,8 @@
 /* CHIRPS v2 / v3 Tanganyika basin and polygon explorer — 1981–2025.
  * Runtime: Google Earth Engine Code Editor (ee, ui, Map and print globals).
- * Launch: configure the three accessible asset IDs below, paste this entire
- * file into a Code Editor script, and click Run. No private script imports.
+ * Launch: paste this entire file into the Code Editor and click Run. Enter
+ * the asset project ID in the sidebar and click Connect / retry. Alternatively
+ * configure the three asset IDs below. No private script imports.
  * Inputs: shared Africa annual image; exact basin overlap weights/monthly
  * image; five supplied polygons plus three derived land polygons. The images
  * and geometries are private inputs, not embedded in this public source.
@@ -307,14 +308,14 @@ function checkCatalogMetadata(m) {
 
 
 /* Interface only. Calculation functions are in the preceding sections. */
-var ctx=createContext();
+var ctx=null;
 var state={first:1981,last:2025,key:'whole',elevation:null,threshold:100,ready:false,busy:false,revision:0,point:null,image:null};
 var INK='#163641',BLUE='#21618c',ORANGE='#b64e24',TEAL='#007c78';
 function label(text,bold) { return ui.Label(text,{color:INK,fontSize:'13px',whiteSpace:'pre-wrap',fontWeight:bold?'bold':'normal',margin:'4px 0'}); }
 function heading(text) { return ui.Label(text,{color:TEAL,fontSize:'17px',fontWeight:'bold',margin:'14px 0 5px'}); }
 function fmt(v,n) { return typeof v==='number' && isFinite(v) ? v.toFixed(n) : 'Not available'; }
 function rounded(v) { return typeof v==='number' && isFinite(v) ? Number(v.toFixed(3)) : null; }
-function dirty() { if(state.ready) status.setValue('Selection changed. Press Apply selection.'); }
+function dirty() { if(state.ready && !state.busy) status.setValue('Selection changed. Press Apply selection.'); }
 var sidebar=ui.Panel({style:{width:'420px',padding:'14px',stretch:'vertical'}});
 sidebar.add(ui.Label('CHIRPS v2 and v3 | Tanganyika',{fontSize:'23px',fontWeight:'bold',color:INK}));
 sidebar.add(label('Compare the supplied basin and polygons using the same 1981–2025 rainfall and exact area weights as the report.'));
@@ -325,6 +326,26 @@ var linker=ui.Map.Linker([leftMap,rightMap]);
 var maps=ui.SplitPanel({firstPanel:leftMap,secondPanel:rightMap,orientation:'horizontal',wipe:false,style:{stretch:'both'}});
 ui.root.clear();ui.root.setLayout(ui.Panel.Layout.flow('horizontal'));ui.root.add(sidebar).add(maps);
 leftMap.setCenter(31.2,-5.5,6);
+
+
+sidebar.add(heading('Connect to the study assets'));
+var assetFields = ['preparedAsset', 'supportAsset', 'boundaryAsset'];
+var assetTemplates = {};
+assetFields.forEach(function(key) { assetTemplates[key] = CONFIG[key]; });
+var configuredProjects = assetFields.filter(function(key) { return CONFIG[key]; }).map(function(key) {
+  var match = CONFIG[key].match(/^projects\/([^/]+)\/assets\//);
+  return match ? match[1] : '';
+});
+var initialProject = configuredProjects.length && configuredProjects.every(function(p) {
+  return p === configuredProjects[0] && p !== 'your-project';
+}) ? configuredProjects[0] : '';
+var projectInput = ui.Textbox({placeholder: 'Project ID containing the prepared assets',
+  value: initialProject, style: {stretch: 'horizontal'}});
+var connectButton = ui.Button({label: 'Connect / retry', onClick: connectAssets,
+  style: {stretch: 'horizontal'}});
+sidebar.add(projectInput).add(connectButton);
+sidebar.add(label('Enter the project that stores the study assets. This does not change your signed-in account or grant access. For custom asset names, edit CONFIG above.'));
+sidebar.add(label('After connection, map tiles load separately. Choose years/area, press Apply selection once, then allow the maps to draw. Calculations run only when requested.'));
 
 sidebar.add(heading('1. Select years and polygon'));
 var years=[];for(var y=1981;y<=2025;y++) years.push(String(y));
@@ -389,7 +410,7 @@ function applySelection() {
   state.image=comparisonImage(ctx,first,last,state.key,state.elevation,state.threshold,false);
   resultsPanel.clear();pointPanel.clear().add(label('Click a map to inspect a selected cell.'));
   selectionLabel.setValue(first+'–'+last+' | '+areaSpec(state.key).label+' | '+elevationSelect.getValue()+(state.elevation!==null?' | land only':''));
-  renderMaps();status.setValue('Maps requested. Choose a calculation or click a cell.');
+  renderMaps();status.setValue('Connected. Map tiles are loading separately; allow them to draw. Choose a calculation or click a cell.');
 }
 
 /** Fixed ranges make all polygon and period views visually comparable. */
@@ -436,8 +457,8 @@ function renderMaps() {
 function setBusy(busy) {
   state.busy=busy;
   [applyButton,summaryButton,unitsButton,originalsButton,elevationButton,annualButton,monthlyButton,zoomButton].forEach(function(b) { b.setDisabled(busy||!state.ready); });
-  [firstSelect,lastSelect,areaSelect,elevationSelect,thresholdSelect].forEach(function(c) { c.setDisabled(busy||!state.ready); });
-  historyButton.setDisabled(busy||!state.point);
+  // Selection controls stay usable during startup, failures and calculations.
+  historyButton.setDisabled(busy||!state.ready||!state.point);
 }
 
 /** One statistics request at a time, with visible errors and stale-response guard. */
@@ -445,7 +466,7 @@ function request(object,message,callback) {
   if(state.busy) return;
   var revision=state.revision;setBusy(true);status.setValue(message);
   object.evaluate(function(value,error) {
-    setBusy(false);if(revision!==state.revision) return;
+    if(revision!==state.revision) return;setBusy(false);
     if(error) { status.setValue('Earth Engine request failed: '+error+'\nCheck asset access or retry.');return; }
     try { callback(value);status.setValue('Calculation complete. Period and area are labelled with each result.'); }
     catch(e) { status.setValue('Could not interpret the result: '+e.message); }
@@ -559,9 +580,63 @@ function showPointHistory() {
   });
 }
 
-setBusy(false);
-catalogMetadata(ctx).evaluate(function(metadata,error) {
-  if(error) { status.setValue('Startup stopped: '+error+'\nThe two basin assets must first be prepared in an authorized Earth Engine project. See this app’s README.');return; }
-  try { checkCatalogMetadata(metadata);state.ready=true;setBusy(false);applySelection();print('Basin inputs and grids verified.',metadata); }
-  catch(e) { status.setValue('Startup stopped: '+e.message); }
-});
+
+/** Validate locally; a placeholder must never trigger a server request. */
+function configureAssets(project) {
+  project = String(project || '').trim();
+  if (project && (!/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(project) || project === 'your-project')) {
+    throw new Error('Enter a real Google Cloud project ID, not a full asset path or your-project.');
+  }
+  var resolved = {};
+  assetFields.forEach(function(key) {
+    var path = assetTemplates[key];
+    if (project && path) {
+      if (!/^projects\/[^/]+\/assets\//.test(path)) {
+        throw new Error('For legacy or custom assets, leave the project field blank and set CONFIG.' + key + ' directly.');
+      }
+      path = path.replace(/^projects\/[^/]+\/assets\//, 'projects/' + project + '/assets/');
+    }
+    if (path && /your-project|your_asset|YOUR_PROJECT/.test(path)) {
+      throw new Error('Setup needed: enter the project containing the prepared study assets, then click Connect / retry. Waiting will not resolve a placeholder path.');
+    }
+    if (!path) throw new Error('Missing required CONFIG.' + key + '.');
+    resolved[key] = path;
+  });
+  assetFields.forEach(function(key) { CONFIG[key] = resolved[key]; });
+}
+
+/** Reconnect without rerunning the script; invalidate responses from older requests. */
+function connectAssets() {
+  state.revision++;
+  var revision = state.revision;
+  state.ready = false; state.point = null; state.image = null; ctx = null;
+  setBusy(false);
+  resultsPanel.clear(); pointPanel.clear(); selectionLabel.setValue('');
+  [leftMap, rightMap].forEach(function(map) { map.layers().reset([]); });
+  leftLegend.clear(); rightLegend.clear();
+  function failed(message) {
+    state.ready = false; state.image = null; setBusy(false);
+    status.setValue(message);
+  }
+  try {
+    configureAssets(projectInput.getValue());
+    ctx = createContext();
+    status.setValue('Checking access, bands and grids… You can choose options while this runs.');
+    catalogMetadata(ctx, true).evaluate(function(metadata, error) {
+      if (revision !== state.revision) return;
+      if (error) {
+        failed('Connection failed: ' + error + '\nCheck the asset project and signed-in account, then click Connect / retry. Waiting alone will not fix a missing asset or denied access.');
+        return;
+      }
+      try {
+        checkCatalogMetadata(metadata, true);
+        // Set both maps after startup; initial map creation can restore a default view.
+        [leftMap, rightMap].forEach(function(map) { map.setCenter(31.2, -5.5, 6); });
+        state.ready = true; setBusy(false); applySelection();
+        print('Basin assets and native grids verified.', metadata);
+      } catch (e) { failed('Startup check failed: ' + e.message + '\nCorrect the inputs and click Connect / retry.'); }
+    });
+  } catch (e) { failed(e.message); }
+}
+
+connectAssets();
