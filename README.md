@@ -59,16 +59,20 @@ example, `GEE/S1_Opera_query.js` expects a variable named `geometry`.
 The [Africa explorer](GEE/CHIRPS_v2_v3_comparison_v2.js) and
 [Tanganyika explorer](GEE/CHIRPS_Tanganyika_Explorer.js) are standalone Code
 Editor scripts. Copy the complete file into the Code Editor and click **Run**.
-Enter the project ID containing the prepared study assets in **Connect to the
-study assets**, then click **Connect / retry**. Source publication on GitHub is separate from hosting an Earth
+Both connect automatically to the existing study assets in
+`hardy-tenure-383607`. The project field is prefilled and remains editable.
+Use an Earth Engine account with access to those assets.
+Source publication on GitHub is separate from hosting an Earth
 Engine App. Running these explorers does not create assets, start exports or
 change sharing permissions.
 
 Only the JavaScript sources are included here. The local HTML application,
-embedded basin data, shapefiles, rainfall exports, credentials and original
-private asset identifiers are not included in this addition. Asset paths use
-`projects/your-project/assets/...` placeholders. The connection field replaces
-the project prefix while retaining the study's asset names. Enter a project ID,
+embedded basin data, shapefiles, rainfall exports and credentials are not included.
+The original study asset paths are included as defaults at the owner's request;
+their Earth Engine access permissions remain unchanged.
+To use compatible assets in another project, change the connection field and
+click **Connect / retry**. This replaces the project prefix while retaining
+the study's asset names. Enter a project ID,
 not a full asset path. For different asset names or assets in multiple projects,
 edit the paths in `CONFIG` and leave the connection field blank. The project
 must already contain accessible images/tables; GitHub access does not grant

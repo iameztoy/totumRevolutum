@@ -1,8 +1,8 @@
 /* CHIRPS v2 / v3 Tanganyika basin and polygon explorer — 1981–2025.
  * Runtime: Google Earth Engine Code Editor (ee, ui, Map and print globals).
- * Launch: paste this entire file into the Code Editor and click Run. Enter
- * the asset project ID in the sidebar and click Connect / retry. Alternatively
- * configure the three asset IDs below. No private script imports.
+ * Launch: paste this entire file into the Code Editor and click Run.
+ * Existing study assets connect automatically. To switch projects, edit
+ * the sidebar field and click Connect / retry; edit CONFIG for other paths.
  * Inputs: shared Africa annual image; exact basin overlap weights/monthly
  * image; five supplied polygons plus three derived land polygons. The images
  * and geometries are private inputs, not embedded in this public source.
@@ -20,9 +20,11 @@ var CONFIG = {
   v2: 'UCSB-CHG/CHIRPS/PENTAD', v3: 'UCSB-CHC/CHIRPS/V3/PENTAD',
   crs: 'EPSG:4326', transform: [0.05000000074505806, 0, -180, 0, -0.05000000074505806, 50],
   bounds: [28.35, -9.75, 34.10, -1.30], tileScale: 2, maxPixels: 5000000,
-  preparedAsset: 'projects/your-project/assets/chirps_africa_annual_1981_2025_20261015',
-  supportAsset: 'projects/your-project/assets/chirps_tanganyika_support_native_1981_2025_20261015',
-  boundaryAsset: 'projects/your-project/assets/chirps_tanganyika_polygons_20261015',
+  // Completed study assets: shared Africa rainfall, native basin support, and polygons.
+  // Edit these full paths to use compatible assets with other names or locations.
+  preparedAsset: 'projects/hardy-tenure-383607/assets/chirps_africa_annual_1981_2025_20261015',
+  supportAsset: 'projects/hardy-tenure-383607/assets/chirps_tanganyika_support_native_1981_2025_20261015',
+  boundaryAsset: 'projects/hardy-tenure-383607/assets/chirps_tanganyika_polygons_20261015',
   schema: 'chirps-tanganyika-explorer-v1',
   weightsSHA256: 'c03f1691b80f428074096232872e505d4434fa67f640c42de65e3167ee23917e',
   elevationEdges: [250,500,1000,1500,2000,3000],
@@ -344,7 +346,7 @@ var projectInput = ui.Textbox({placeholder: 'Project ID containing the prepared 
 var connectButton = ui.Button({label: 'Connect / retry', onClick: connectAssets,
   style: {stretch: 'horizontal'}});
 sidebar.add(projectInput).add(connectButton);
-sidebar.add(label('Enter the project that stores the study assets. This does not change your signed-in account or grant access. For custom asset names, edit CONFIG above.'));
+sidebar.add(label('The configured study assets connect automatically on Run. To use another project, change the field and click Connect / retry. For different asset names, edit CONFIG above. Asset access uses your signed-in account.'));
 sidebar.add(label('After connection, map tiles load separately. Choose years/area, press Apply selection once, then allow the maps to draw. Calculations run only when requested.'));
 
 sidebar.add(heading('1. Select years and polygon'));
