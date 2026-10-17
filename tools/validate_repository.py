@@ -74,7 +74,7 @@ def check_javascript(node: str | None) -> tuple[int, list[str]]:
 
 
 def check_python() -> tuple[int, list[str]]:
-    files = repository_files("*.py")
+    files = sorted(repository_files("*.py") + repository_files("*.pyt"))
     failures: list[str] = []
     for path in files:
         try:
@@ -144,7 +144,7 @@ def check_catalog() -> tuple[int, list[str]]:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     cataloged_files = [
         path
-        for folder in ("GEE", "Apps", "JNotebooks")
+        for folder in ("GEE", "Apps", "ArcGIS_TBs", "JNotebooks")
         for path in sorted((ROOT / folder).rglob("*"))
         if path.is_file()
         and not any(part in EXCLUDED_PARTS for part in path.parts)

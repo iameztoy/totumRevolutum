@@ -13,6 +13,7 @@ on its own so it can be copied into the appropriate environment when needed.
 - `GEE/` — scripts for the Earth Engine Code Editor and Earth Engine-related
   notebooks.
 - `Apps/` — a curated list of useful external geospatial applications.
+- `ArcGIS_TBs/` — standalone ArcGIS Pro Python toolboxes.
 - `JNotebooks/` — portable Jupyter notebooks for ArcGIS Pro, VS Code, and
   JupyterLab.
 - `tools/` — repository-level validation utilities; these do not form part of
@@ -37,6 +38,7 @@ on its own so it can be copied into the appropriate environment when needed.
 | `GEE/S1_Opera_query.js` | GEE Code Editor | Sentinel-1/OPERA monthly counts and temporal-resolution diagnostics for a supplied geometry. |
 | `GEE/Wildfire_detection.js` | GEE Code Editor | Sentinel-2 burned-area and fire-severity workflow with configurable image selection, masks, statistics, and exports. |
 | `Apps/List` | Web browser | Small, annotated catalog of useful external geospatial web applications. |
+| `ArcGIS_TBs/CEMSacts.pyt` | ArcGIS Pro | Browse public CEMS Rapid Mapping activations, inventory and download products, and load supported COG or GeoJSON layers with best-effort CEMS symbology. |
 | `JNotebooks/LandSenView_geemap.ipynb` | ArcGIS Pro / VS Code / JupyterLab | Interactive geemap explorer for querying point- or polygon-based Sentinel-2, Landsat, and Sentinel-1 imagery and displaying the LandSenView band combinations. |
 | `JNotebooks/Wildfire_detection_geemap.ipynb` | ArcGIS Pro / VS Code / JupyterLab | Sentinel-2 burned-area and fire-severity workflow with a geemap polygon AOI, consolidated settings, selective output catalogue, ArcGIS Scene transfer, statistics, and Drive export definitions. |
 
@@ -217,6 +219,22 @@ Engine mosaic to a chosen ArcGIS map or 3D scene. External VS Code or Jupyter
 kernels cannot alter a scene already open in ArcGIS Pro because they cannot use
 the application's `ArcGISProject("CURRENT")` context.
 
+## Using the ArcGIS Pro toolbox
+
+`ArcGIS_TBs/CEMSacts.pyt` requires ArcGIS Pro and its bundled `arcpy` Python
+environment. In the ArcGIS Pro Catalog pane, add the `.pyt` file as a toolbox
+and open **Browse CEMS Rapid Mapping Activation**. Enter an activation code
+such as `EMSR927`, select the published assets, and choose whether to load,
+download, or only inventory them.
+
+The toolbox queries public Copernicus Emergency Management Service endpoints
+and may create an anonymous S3 cloud-storage connection, a per-activation cache,
+a file geodatabase, downloaded products, and an inventory CSV under the chosen
+or project-derived output locations. Review those paths before running it. COG
+and GeoJSON availability varies by activation, and CEMS service/schema changes
+can affect the workflow. Repository validation checks Python syntax only; it
+cannot exercise `arcpy`, the live CEMS API, or ArcGIS Pro map/scene behavior.
+
 ## Using the burned-area geemap notebook
 
 Open `JNotebooks/Wildfire_detection_geemap.ipynb`, run the setup and import
@@ -257,10 +275,11 @@ After making a change, run the repository checks:
 python tools/validate_repository.py
 ```
 
-The validator checks JavaScript syntax when Node.js is available, Python syntax,
-notebook JSON structure, and whether files in `GEE/` and `Apps/` are represented
-in this catalog. It does not execute Earth Engine operations; functional
-validation still happens in the relevant runtime.
+The validator checks JavaScript syntax when Node.js is available, Python and
+ArcGIS `.pyt` syntax, notebook JSON/output structure, high-confidence credential
+patterns, and whether files in `GEE/`, `Apps/`, `ArcGIS_TBs/`, and `JNotebooks/`
+are represented in this catalog. It does not execute Earth Engine or ArcGIS Pro
+operations; functional validation still happens in the relevant runtime.
 
 Then review and publish the branch:
 
